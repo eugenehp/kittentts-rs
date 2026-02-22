@@ -1,0 +1,4 @@
+<resources>
+    <!-- Base application theme — used by the Activity window before Compose takes over. -->
+    <style name="Theme.KittenTTSApp" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

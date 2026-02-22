@@ -1,0 +1,117 @@
+[package]
+name = "kittentts"
+version = "0.1.0"
+edition = "2021"
+authors = ["Eugene Hauptmann"]
+description = "Rust port of KittenTTS — lightweight ONNX-based text-to-speech"
+repository = "https://github.com/eugenehp/kittentts-rs"
+homepage = "https://github.com/eugenehp/kittentts-rs"
+keywords = ["tts", "text-to-speech", "onnx", "speech-synthesis", "espeak"]
+license = "Apache-2.0"
+
+exclude = ["ios", "android"]
+
+[lib]
+# rlib     — used by `cargo test`, `cargo build`, and downstream Rust crates.
+# staticlib — produces libkittentts.a for the iOS / Android Xcode / Gradle build.
+#             The build script (ios/build_rust_ios.sh) links this with ORT and
+#             espeak-ng into a single KittenTTS.xcframework.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# ── Platform-independent ─────────────────────────────────────────────────────
+
+# WAV file I/O
+hound = "3"
+
+# Regex for text preprocessing and tokenisation
+# fancy-regex: drop-in compatible with regex, adds look-ahead/look-behind support
+fancy-regex = "0.14"
+# regex is still used in tokenize.rs (simple patterns, no look-around)
+regex = "1"
+once_cell = "1"
+
+# JSON config parsing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# ZIP for NPZ parsing — pure-Rust deflate (the only compression numpy .npz uses)
+# on mobile; full feature set kept on desktop for completeness.
+# NOTE: Desktop and mobile use separate target sections so features aren't merged.
+
+# ── ONNX Runtime — platform-specific linking strategy ────────────────────────
+#
+# ort-sys build script resolution order:
+#   1. ORT_LIB_LOCATION env var       — explicit user-provided path
+#   2. pkg-config                     — finds system libonnxruntime
+#                                       (e.g. Alpine: apk add onnxruntime-dev)
+#   3. download-binaries              — fetches the pre-built ORT library for
+#                                       the current target from cdn.pyke.io
+#
+# Platform notes:
+#   Desktop (Linux/macOS/Windows)
+#     pkg-config first (zero-download on Alpine/Debian/Homebrew installs), then
+#     falls back to download-binaries.  copy-dylibs places the .so/.dylib next
+#     to the binary so the dynamic linker finds it without RPATH changes.
+#
+#   iOS
+#     ORT ships as a static XCFramework; ort-sys handles it via the
+#     ORT_IOS_XCFWK_LOCATION env var or download-binaries.  copy-dylibs is
+#     omitted — there is no .dylib to copy for static iOS builds.
+#
+#   Android
+#     download-binaries fetches libonnxruntime.so for the NDK target.
+#     copy-dylibs places the .so next to the binary (useful for native-activity
+#     and for cargo-ndk test runs; AAR packaging requires manual placement in
+#     jniLibs/ afterwards).
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+# HuggingFace Hub for model download — desktop only.
+# hf-hub's default "native-tls" feature pulls in openssl-sys which cannot be
+# cross-compiled for iOS/Android without a full SDK.  Mobile apps bundle models.
+hf-hub = "0.5"
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "pkg-config",        # try system libonnxruntime first (graceful no-op if absent)
+    "download-binaries", # fallback: fetch pre-built binary
+    "tls-native",        # TLS via OpenSSL/Secure-Transport (available on desktop)
+    "copy-dylibs",       # copy .so/.dylib next to the output binary
+] }
+# Full zip feature set on desktop — bzip2/lzma/zstd/xz codecs all available.
+zip = "2"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    # download-binaries: ort-sys downloads libonnxruntime.a from cdn.pyke.io at
+    # build time (aarch64-apple-ios.tar.lzma2 or …-sim.tar.lzma2).  ring (pulled
+    # in by tls-rustls) compiles fine on a macOS host that has Xcode installed.
+    # iOS builds must be done from macOS — cargo check from Linux will fail here.
+    "download-binaries",
+    "tls-rustls",
+    # copy-dylibs intentionally omitted — ORT is a static lib on iOS
+] }
+# Deflate-only zip: avoids bzip2-sys, lzma-sys, zstd-sys which need C cross-toolchain.
+# numpy .npz files only use deflate (or store), so this is functionally complete.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
+    "std",
+    "download-binaries", # fetches libonnxruntime.so for the Android NDK target
+    "tls-rustls",        # pure-Rust TLS — avoids openssl-sys cross-compilation
+    "copy-dylibs",       # copies .so next to binary; move to jniLibs/ for APK packaging
+] }
+# Deflate-only zip: avoids bzip2-sys, lzma-sys, zstd-sys which need C cross-toolchain.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
