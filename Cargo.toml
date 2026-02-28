@@ -81,8 +81,9 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = [
     "tls-native",        # TLS via OpenSSL/Secure-Transport (available on desktop)
     "copy-dylibs",       # copy .so/.dylib next to the output binary
 ] }
-# Full zip feature set on desktop — bzip2/lzma/zstd/xz codecs all available.
-zip = "2"
+# Deflate-only on all platforms — NPZ files only use deflate (or store).
+# Avoids lzma-sys which conflicts with liblzma-sys (tracel-llvm-bundler).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 ort = { version = "=2.0.0-rc.11", default-features = false, features = [
@@ -110,7 +111,9 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = [
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
-pkg-config = "0.3"
+# No external crates needed — the build script uses std::process::Command to
+# call pkg-config and brew directly, avoiding a compile-time dependency on the
+# pkg-config crate.
 
 [[example]]
 name = "basic"
