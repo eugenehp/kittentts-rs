@@ -45,6 +45,14 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=ESPEAK_BUILD_SCRIPT");
 
+    // ── Feature gate ──────────────────────────────────────────────────────────
+    // When the `espeak` feature is not enabled the crate compiles without any
+    // native system library.  All IPA-input APIs remain available; only the
+    // text-to-phoneme (espeak-ng) path is absent.
+    if std::env::var("CARGO_FEATURE_ESPEAK").is_err() {
+        return;
+    }
+
     // ── 1. Explicit override ──────────────────────────────────────────────────
     if let Ok(dir) = std::env::var("ESPEAK_LIB_DIR") {
         // Auto-build when the archive is missing and a build script is provided.
@@ -70,9 +78,8 @@ fn main() {
     }
 
     // ── 2. pkg-config ─────────────────────────────────────────────────────────
-    // Only used to find the libdir; we then check for the static archive there.
-    // No `-l` tokens from pkg-config output are ever used — they would emit
-    // dylib directives, defeating the static-only requirement.
+    // Prefer the static archive; on Linux desktop fall back to the dynamic
+    // library when only a .so is available (e.g. `apt install libespeak-ng-dev`).
     if let Some(dir) = pkg_config_libdir(&target_os) {
         if Path::new(&dir).join("libespeak-ng.a").exists() {
             println!("cargo:rustc-link-search=native={dir}");
@@ -80,11 +87,16 @@ fn main() {
             link_cxx(&target_os);
             return;
         }
-        // pkg-config found the package but only has a dynamic library — skip.
+        // Linux desktop: accept dynamic library when no static archive exists.
+        if target_os == "linux" && has_dylib(&dir) {
+            println!("cargo:rustc-link-search=native={dir}");
+            println!("cargo:rustc-link-lib=espeak-ng");
+            return;
+        }
     }
 
     // ── 3. Platform path walk ─────────────────────────────────────────────────
-    // Static archives only; no dylib fallback.
+    // Prefer static; fall back to dynamic on Linux desktop.
     for dir in candidate_dirs(&target_os, &target_arch) {
         if dir.join("libespeak-ng.a").exists() {
             let dir_str = dir.to_string_lossy();
@@ -93,26 +105,31 @@ fn main() {
             link_cxx(&target_os);
             return;
         }
+        if target_os == "linux" && has_dylib(dir.to_str().unwrap_or("")) {
+            let dir_str = dir.to_string_lossy();
+            println!("cargo:rustc-link-search=native={dir_str}");
+            println!("cargo:rustc-link-lib=espeak-ng");
+            return;
+        }
     }
 
     // ── 4. Nothing found ──────────────────────────────────────────────────────
     panic!(
         "\n\n\
-         kittentts: could not find libespeak-ng.a (static archive required).\n\
+         kittentts: could not find libespeak-ng (static archive preferred, dynamic accepted on Linux).\n\
          \n\
-         Build espeak-ng as a static library, then set ESPEAK_LIB_DIR:\n\
+         Install or build espeak-ng, then rebuild:\n\
          \n\
-         \t  macOS   :  bash scripts/build-espeak-static.sh\n\
-         \t             ESPEAK_LIB_DIR=src-tauri/espeak-static/lib cargo build\n\
-         \t  Ubuntu  :  sudo apt install libespeak-ng-dev    # provides .so only;\n\
-         \t             build from source for a static archive if needed.\n\
+         \t  macOS   :  brew install espeak-ng               (dynamic; static: bash scripts/build-espeak-static.sh)\n\
+         \t             ESPEAK_LIB_DIR=src-tauri/espeak-static/lib cargo build --features espeak\n\
+         \t  Ubuntu  :  sudo apt install libespeak-ng-dev\n\
          \t  Fedora  :  sudo dnf install espeak-ng-devel\n\
          \t  Alpine  :  apk add espeak-ng-dev espeak-ng-static\n\
          \t  Arch    :  sudo pacman -S espeak-ng\n\
          \n\
          Or point the build script at an existing archive:\n\
          \n\
-         \t  ESPEAK_LIB_DIR=/your/path/lib cargo build\n\n"
+         \t  ESPEAK_LIB_DIR=/your/path/lib cargo build --features espeak\n\n"
     );
 }
 
@@ -137,6 +154,25 @@ fn link_static_from_dir(dir: &str, target_os: &str) {
     println!("cargo:rustc-link-search=native={dir}");
     println!("cargo:rustc-link-lib=static=espeak-ng");
     link_cxx(target_os);
+}
+
+/// Returns `true` if `dir` contains a shared library for espeak-ng
+/// (`libespeak-ng.so*` on Linux, `libespeak-ng.dylib` on macOS).
+fn has_dylib(dir: &str) -> bool {
+    let dir = Path::new(dir);
+    // Accept libespeak-ng.so or any versioned variant (e.g. libespeak-ng.so.1).
+    if dir.join("libespeak-ng.so").exists() { return true; }
+    if dir.join("libespeak-ng.dylib").exists() { return true; }
+    // Check for versioned .so.X
+    std::fs::read_dir(dir).ok().map_or(false, |mut entries| {
+        entries.any(|e| {
+            e.ok().and_then(|e| {
+                let name = e.file_name();
+                let s = name.to_string_lossy();
+                if s.starts_with("libespeak-ng.so.") { Some(()) } else { None }
+            }).is_some()
+        })
+    })
 }
 
 /// Emit the C++ standard-library link needed when statically linking espeak-ng.

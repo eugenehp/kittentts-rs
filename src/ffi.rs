@@ -121,6 +121,9 @@ pub unsafe extern "C" fn kittentts_model_voices(
 
 /// Synthesise `text` and write a 32-bit float WAV to `output_path`.
 ///
+/// **Requires the `espeak` Cargo feature** (phonemisation of raw text).
+/// Use `kittentts_synthesize_ipa_to_file` if you supply pre-computed IPA.
+///
 /// @param model        Handle from [`kittentts_model_load`].
 /// @param text         UTF-8 text to speak.
 /// @param voice        Voice name — must be one of the voices from
@@ -130,6 +133,7 @@ pub unsafe extern "C" fn kittentts_model_voices(
 /// @return             `NULL` on success; on failure a heap-allocated UTF-8 error
 ///                     message that the caller must release with
 ///                     [`kittentts_free_error`].
+#[cfg(feature = "espeak")]
 #[no_mangle]
 pub unsafe extern "C" fn kittentts_synthesize_to_file(
     model: *const KittenTtsHandle,

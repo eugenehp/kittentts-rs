@@ -16,10 +16,11 @@ use ort::{session::Session, value::Tensor};
 
 use crate::{
     npz::{load_npz, NpyArray},
-    phonemize::phonemize,
-    preprocess::TextPreprocessor,
     tokenize::ipa_to_ids,
 };
+
+#[cfg(feature = "espeak")]
+use crate::{phonemize::phonemize, preprocess::TextPreprocessor};
 
 /// Samples trimmed from the tail of every generated chunk to remove the model's
 /// trailing silence artifact.
@@ -38,12 +39,14 @@ const TAIL_TRIM: usize = 2_000;
 pub const SAMPLE_RATE: u32 = 24_000;
 
 /// Maximum characters per text chunk before splitting.
+#[cfg(feature = "espeak")]
 const CHUNK_MAX_CHARS: usize = 400;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Text chunker (mirrors `chunk_text` in onnx_model.py)
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "espeak")]
 fn ensure_punctuation(text: &str) -> String {
     let text = text.trim();
     if text.is_empty() {
@@ -55,6 +58,7 @@ fn ensure_punctuation(text: &str) -> String {
     }
 }
 
+#[cfg(feature = "espeak")]
 fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     for sentence in text.split_terminator(['.', '!', '?']) {
@@ -117,6 +121,7 @@ pub struct KittenTtsOnnx {
     voices: HashMap<String, Voice>,
     speed_priors: HashMap<String, f32>,
     voice_aliases: HashMap<String, String>,
+    #[cfg(feature = "espeak")]
     preprocessor: TextPreprocessor,
     pub available_voices: Vec<String>,
 }
@@ -148,6 +153,7 @@ impl KittenTtsOnnx {
             voices,
             speed_priors,
             voice_aliases,
+            #[cfg(feature = "espeak")]
             preprocessor: TextPreprocessor::new(),
             available_voices,
         })
@@ -217,9 +223,12 @@ impl KittenTtsOnnx {
         Ok(audio_flat[..trimmed_len].to_vec())
     }
 
-    // ── Text → audio ──────────────────────────────────────────────────────────
+    // ── Text → audio (requires `espeak` feature) ──────────────────────────────
 
     /// Phonemise `text` with espeak-ng (via C library) and run inference.
+    ///
+    /// **Requires the `espeak` Cargo feature.**
+    #[cfg(feature = "espeak")]
     pub fn generate_chunk(&self, text: &str, voice: &str, speed: f32) -> Result<Vec<f32>> {
         let voice_key = self.resolve_voice(voice);
         let effective_speed = speed * self.speed_priors.get(voice_key).copied().unwrap_or(1.0);
@@ -332,6 +341,10 @@ impl KittenTtsOnnx {
     /// Generate audio for `text`, splitting into sentence-level chunks.
     ///
     /// Returns a flat `Vec<f32>` at [`SAMPLE_RATE`] Hz (24 kHz).
+    ///
+    /// **Requires the `espeak` Cargo feature.**  Use [`generate_from_ipa`] or
+    /// [`generate_from_ipa_chunks`] when espeak is not available.
+    #[cfg(feature = "espeak")]
     pub fn generate(
         &self,
         text: &str,
@@ -366,7 +379,10 @@ impl KittenTtsOnnx {
         Ok(audio)
     }
 
-    /// Generate audio from `text` and save it to a 32-bit float WAV file.
+    /// Generate audio from `text` and save it to a WAV file.
+    ///
+    /// **Requires the `espeak` Cargo feature.**
+    #[cfg(feature = "espeak")]
     pub fn generate_to_file(
         &self,
         text: &str,
@@ -384,7 +400,7 @@ impl KittenTtsOnnx {
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, feature = "espeak"))]
 mod tests {
     use super::*;
 

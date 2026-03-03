@@ -11,6 +11,28 @@ license = "Apache-2.0"
 
 exclude = ["ios", "android"]
 
+# ── Feature flags ────────────────────────────────────────────────────────────
+#
+# [default] — empty: the crate compiles and publishes to crates.io without any
+#   native system library.  All IPA-input APIs are available.  Methods that
+#   require text-to-phoneme conversion (generate / generate_chunk /
+#   generate_to_file) are **absent** from the public API surface.
+#
+# espeak — links libespeak-ng statically (or dynamically on Linux) and enables
+#   the full text-input API: generate(), generate_chunk(), generate_to_file().
+#   Requires libespeak-ng to be installed or built from source.
+#
+#   Desktop quick-start:
+#     macOS  :  brew install espeak-ng
+#     Ubuntu :  sudo apt install libespeak-ng-dev
+#     Alpine :  apk add espeak-ng-dev
+#     Arch   :  sudo pacman -S espeak-ng
+#
+#   Mobile / static builds: set ESPEAK_LIB_DIR before building.
+[features]
+default = []
+espeak = []
+
 [lib]
 # rlib     — used by `cargo test`, `cargo build`, and downstream Rust crates.
 # staticlib — produces libkittentts.a for the iOS / Android Xcode / Gradle build.
@@ -118,3 +140,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [[example]]
 name = "basic"
 path = "examples/basic.rs"
+required-features = ["espeak"]
