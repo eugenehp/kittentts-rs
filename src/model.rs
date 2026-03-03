@@ -21,8 +21,18 @@ use crate::{
     tokenize::ipa_to_ids,
 };
 
-/// Samples trimmed from the tail of every generated waveform (matches Python).
-const TAIL_TRIM: usize = 5_000;
+/// Samples trimmed from the tail of every generated chunk to remove the model's
+/// trailing silence artifact.
+///
+/// The original Python implementation used −10 000 samples (417 ms) and also
+/// stripped 5 000 from the leading edge: `outputs[0][5_000:-10_000]`.  That is
+/// far too aggressive for short phrases — word endings get clipped.
+///
+/// We use a much smaller window: 2 000 samples = ~83 ms @ 24 kHz.  This is
+/// enough to strip the artifact without cutting into real speech.  A separate
+/// 1-second silence tail is appended in `tts.rs` to keep the audio driver's
+/// hardware buffer alive until the last sample drains.
+const TAIL_TRIM: usize = 2_000;
 
 /// Audio sample rate produced by the model.
 pub const SAMPLE_RATE: u32 = 24_000;

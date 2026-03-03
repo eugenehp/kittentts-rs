@@ -1,39 +1,35 @@
-//! Build script — locates and links `libespeak-ng` for every supported target.
+//! Build script — locates and links `libespeak-ng` **statically** for every
+//! supported target.
+//!
+//! Static linking is unconditional: `libespeak-ng.a` must be present.
+//! A dynamic `.so`/`.dylib` is never accepted.  This guarantees that the
+//! final binary carries espeak-ng and its companion libraries (libucd,
+//! libSpeechPlayer) without any runtime dylib dependency.
 //!
 //! ## Resolution order
 //!
-//! 1. **`ESPEAK_LIB_DIR`** env var — explicit directory; required for mobile
-//!    cross-compilation.  Set it to the directory that contains
-//!    `libespeak-ng.{a,so,dylib}`.
+//! 1. **`ESPEAK_LIB_DIR`** env var — explicit directory that contains
+//!    `libespeak-ng.a`.  Required for mobile cross-compilation.  Panics if the
+//!    directory exists but the static archive is absent.
 //!
-//! 2. **pkg-config** — on macOS the search is augmented with Homebrew's
-//!    pkgconfig directories so that a plain `brew install espeak-ng` is
-//!    sufficient.  The libdir reported by pkg-config is always added as an
-//!    explicit `rustc-link-search` to handle Homebrew's non-standard prefix
-//!    (`/opt/homebrew`, `/usr/local`) which is not on the linker's default
-//!    search path.
+//! 2. **pkg-config** — augmented with Homebrew's pkgconfig dirs on macOS.
+//!    The `libdir` variable reported by pkg-config is probed for
+//!    `libespeak-ng.a`; if absent pkg-config is skipped (no dynamic fallback).
 //!
-//! 3. **Platform path walk** — probes known directories in order:
-//!    * macOS: output of `brew --prefix espeak-ng`, then the canonical
-//!      Homebrew keg paths for arm64 (`/opt/homebrew`) and x86_64
-//!      (`/usr/local`), then `/usr/local/lib`.
-//!    * Linux: the Debian/Ubuntu multi-arch directory for the current target,
+//! 3. **Platform path walk** — well-known directories searched in order:
+//!    * macOS: `brew --prefix espeak-ng` keg, then `/opt/homebrew` and
+//!      `/usr/local` canonical keg paths, then `/usr/local/lib`.
+//!    * Linux: Debian/Ubuntu multi-arch dir for the current target,
 //!      then `/usr/lib64`, `/usr/lib`, `/usr/local/lib`.
 //!
-//! ## Static vs dynamic preference
-//!
-//! At every step the script first looks for `libespeak-ng.a` (static) and
-//! only falls back to `libespeak-ng.{so,dylib}` (dynamic) when no static
-//! archive is present.  When a static archive is linked the C++ standard
-//! library is added explicitly because espeak-ng is a C++ project.
+//! If no `libespeak-ng.a` is found anywhere, the build panics with
+//! actionable instructions.
 //!
 //! ## Mobile cross-compilation
 //!
 //! ```text
 //! ESPEAK_LIB_DIR=/path/to/sysroot/usr/lib cargo build --target aarch64-apple-ios
 //! ```
-//! iOS requires a static archive; the script emits `static=espeak-ng`
-//! automatically when `ESPEAK_LIB_DIR` is set and `libespeak-ng.a` is found.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,9 +43,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR");
 
+    println!("cargo:rerun-if-env-changed=ESPEAK_BUILD_SCRIPT");
+
     // ── 1. Explicit override ──────────────────────────────────────────────────
     if let Ok(dir) = std::env::var("ESPEAK_LIB_DIR") {
-        link_from_dir(&dir, &target_os);
+        // Auto-build when the archive is missing and a build script is provided.
+        if !Path::new(&dir).join("libespeak-ng.a").exists() {
+            if let Ok(script) = std::env::var("ESPEAK_BUILD_SCRIPT") {
+                run_espeak_build_script(&script, &target_os);
+            }
+        }
+        link_static_from_dir(&dir, &target_os);
         return;
     }
 
@@ -57,46 +61,36 @@ fn main() {
     if matches!(&*target_os, "ios" | "android") {
         panic!(
             "\n\nESPEAK_LIB_DIR is not set.\n\
-             Cross-compiling for {target_os} requires a pre-built libespeak-ng:\n\
+             Cross-compiling for {target_os} requires a pre-built static libespeak-ng:\n\
              \n\
              \t1. Cross-compile espeak-ng for your target ABI.\n\
-             \t2. Set ESPEAK_LIB_DIR to the directory that contains libespeak-ng.a\n\
+             \t2. Set ESPEAK_LIB_DIR to the directory containing libespeak-ng.a\n\
              \t   (e.g. ESPEAK_LIB_DIR=/path/to/sysroot/usr/lib)\n"
         );
     }
 
     // ── 2. pkg-config ─────────────────────────────────────────────────────────
-    // On macOS, pkg-config may not know about Homebrew's prefix unless
-    // PKG_CONFIG_PATH is set.  We augment it here with the well-known
-    // Homebrew pkgconfig directories before probing.
-    if let Some(dir) = try_pkg_config(&target_os) {
-        // Emit an explicit link-search so the linker finds the library even
-        // when Homebrew's lib dir is not on the default search path.
-        println!("cargo:rustc-link-search=native={dir}");
-        // pkg-config crate already emitted rustc-link-lib; we're done.
-        return;
+    // Only used to find the libdir; we then check for the static archive there.
+    // No `-l` tokens from pkg-config output are ever used — they would emit
+    // dylib directives, defeating the static-only requirement.
+    if let Some(dir) = pkg_config_libdir(&target_os) {
+        if Path::new(&dir).join("libespeak-ng.a").exists() {
+            println!("cargo:rustc-link-search=native={dir}");
+            println!("cargo:rustc-link-lib=static=espeak-ng");
+            link_cxx(&target_os);
+            return;
+        }
+        // pkg-config found the package but only has a dynamic library — skip.
     }
 
     // ── 3. Platform path walk ─────────────────────────────────────────────────
-    let candidates = candidate_dirs(&target_os, &target_arch);
-
-    // Prefer static archive.
-    for dir in &candidates {
-        let candidate = Path::new(dir).join("libespeak-ng.a");
-        if candidate.exists() {
-            println!("cargo:rustc-link-search=native={dir}");
+    // Static archives only; no dylib fallback.
+    for dir in candidate_dirs(&target_os, &target_arch) {
+        if dir.join("libespeak-ng.a").exists() {
+            let dir_str = dir.to_string_lossy();
+            println!("cargo:rustc-link-search=native={dir_str}");
             println!("cargo:rustc-link-lib=static=espeak-ng");
-            link_cxx(&target_os); // espeak-ng is C++ — pull in the stdlib
-            return;
-        }
-    }
-
-    // Fall back to dynamic library.
-    let dylib = if target_os == "macos" { "libespeak-ng.dylib" } else { "libespeak-ng.so" };
-    for dir in &candidates {
-        if Path::new(dir).join(dylib).exists() {
-            println!("cargo:rustc-link-search=native={dir}");
-            println!("cargo:rustc-link-lib=dylib=espeak-ng");
+            link_cxx(&target_os);
             return;
         }
     }
@@ -104,17 +98,19 @@ fn main() {
     // ── 4. Nothing found ──────────────────────────────────────────────────────
     panic!(
         "\n\n\
-         kittentts: could not find libespeak-ng.\n\
+         kittentts: could not find libespeak-ng.a (static archive required).\n\
          \n\
-         Install it with:\n\
+         Build espeak-ng as a static library, then set ESPEAK_LIB_DIR:\n\
          \n\
-         \t  macOS   :  brew install espeak-ng\n\
-         \t  Ubuntu  :  sudo apt install libespeak-ng-dev\n\
+         \t  macOS   :  bash scripts/build-espeak-static.sh\n\
+         \t             ESPEAK_LIB_DIR=src-tauri/espeak-static/lib cargo build\n\
+         \t  Ubuntu  :  sudo apt install libespeak-ng-dev    # provides .so only;\n\
+         \t             build from source for a static archive if needed.\n\
          \t  Fedora  :  sudo dnf install espeak-ng-devel\n\
-         \t  Alpine  :  apk add espeak-ng-dev\n\
+         \t  Alpine  :  apk add espeak-ng-dev espeak-ng-static\n\
          \t  Arch    :  sudo pacman -S espeak-ng\n\
          \n\
-         Or point the build script directly at the library:\n\
+         Or point the build script at an existing archive:\n\
          \n\
          \t  ESPEAK_LIB_DIR=/your/path/lib cargo build\n\n"
     );
@@ -122,19 +118,29 @@ fn main() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Emit link directives for the library found inside `dir`.
-/// Prefers `libespeak-ng.a`; falls back to the shared library.
-fn link_from_dir(dir: &str, target_os: &str) {
-    println!("cargo:rustc-link-search=native={dir}");
-    if Path::new(dir).join("libespeak-ng.a").exists() {
-        println!("cargo:rustc-link-lib=static=espeak-ng");
-        link_cxx(target_os);
-    } else {
-        println!("cargo:rustc-link-lib=dylib=espeak-ng");
+/// Require `libespeak-ng.a` inside `dir` and emit static link directives.
+/// Panics with a clear message if the archive is absent.
+fn link_static_from_dir(dir: &str, target_os: &str) {
+    let static_lib = Path::new(dir).join("libespeak-ng.a");
+    if !static_lib.exists() {
+        panic!(
+            "\n\nESPEAK_LIB_DIR is set to {dir:?} but libespeak-ng.a was not found there.\n\
+             \n\
+             Run the preparation script first:\n\
+             \n\
+             \t  bash scripts/build-espeak-static.sh\n\
+             \n\
+             That script builds a self-contained static archive at:\n\
+             \t  src-tauri/espeak-static/lib/libespeak-ng.a\n\n"
+        );
     }
+    println!("cargo:rustc-link-search=native={dir}");
+    println!("cargo:rustc-link-lib=static=espeak-ng");
+    link_cxx(target_os);
 }
 
 /// Emit the C++ standard-library link needed when statically linking espeak-ng.
+/// espeak-ng is a C++ project; without this the linker cannot resolve C++ symbols.
 fn link_cxx(target_os: &str) {
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=dylib=c++");
@@ -143,11 +149,12 @@ fn link_cxx(target_os: &str) {
     }
 }
 
-/// Try pkg-config, augmenting `PKG_CONFIG_PATH` with Homebrew directories on
-/// macOS.  Returns the libdir on success so the caller can emit
-/// `rustc-link-search`.
-fn try_pkg_config(target_os: &str) -> Option<String> {
-    // Build an augmented PKG_CONFIG_PATH.
+/// Use pkg-config *only* to discover the library installation directory.
+/// Returns the `libdir` variable if the package is known to pkg-config,
+/// regardless of whether a static archive is present (caller checks that).
+///
+/// On macOS the search is augmented with Homebrew's pkgconfig directories.
+fn pkg_config_libdir(target_os: &str) -> Option<String> {
     let mut extra: Vec<String> = Vec::new();
 
     if target_os == "macos" {
@@ -158,62 +165,19 @@ fn try_pkg_config(target_os: &str) -> Option<String> {
             let p = format!("{prefix}/share/pkgconfig");
             if Path::new(&p).is_dir() { extra.push(p); }
         }
-
         // `brew --prefix espeak-ng` gives the exact keg path even when the
-        // formula is keg-only and not linked into the standard Homebrew prefix.
+        // formula is keg-only and not linked into the standard prefix.
         if let Some(keg) = brew_prefix("espeak-ng") {
             let p = format!("{keg}/lib/pkgconfig");
             if Path::new(&p).is_dir() { extra.insert(0, p); }
         }
     }
 
-    // Prepend extras to the existing PKG_CONFIG_PATH.
     let existing = std::env::var("PKG_CONFIG_PATH").unwrap_or_default();
     if !existing.is_empty() { extra.push(existing); }
-
     let pkg_path = extra.join(":");
 
-    // Call pkg-config directly so we can pass the augmented path as an
-    // environment variable without mutating the process environment.
-    let out = Command::new("pkg-config")
-        .args(["--libs", "--cflags", "--static", "espeak-ng"])
-        .env("PKG_CONFIG_PATH", &pkg_path)
-        .output()
-        .ok()?;
-
-    if !out.status.success() {
-        // Try again without --static (dynamic only).
-        let out = Command::new("pkg-config")
-            .args(["--libs", "--cflags", "espeak-ng"])
-            .env("PKG_CONFIG_PATH", &pkg_path)
-            .output()
-            .ok()?;
-        if !out.status.success() { return None; }
-    }
-
-    // Parse the pkg-config output and emit cargo directives.
-    let flags = String::from_utf8(out.stdout).ok()?;
-    emit_pkg_config_flags(&flags);
-
-    // Also grab the libdir so the caller can emit rustc-link-search.
-    let libdir = pkg_config_variable("espeak-ng", "libdir", &pkg_path)
-        .unwrap_or_default();
-
-    // Return the libdir (may be empty string if pkg-config didn't report one).
-    Some(libdir)
-}
-
-/// Parse raw pkg-config `--libs --cflags` output and emit the appropriate
-/// `cargo:` directives.
-fn emit_pkg_config_flags(flags: &str) {
-    for token in flags.split_whitespace() {
-        if let Some(path) = token.strip_prefix("-L") {
-            println!("cargo:rustc-link-search=native={path}");
-        } else if let Some(lib) = token.strip_prefix("-l") {
-            println!("cargo:rustc-link-lib=dylib={lib}");
-        }
-        // -I, -D etc. (cflags) are ignored — phonemize.rs uses no includes.
-    }
+    pkg_config_variable("espeak-ng", "libdir", &pkg_path)
 }
 
 /// Call `pkg-config --variable=<var> <package>`.
@@ -243,8 +207,56 @@ fn brew_prefix(formula: &str) -> Option<String> {
     }
 }
 
-/// Ordered list of directories to probe for `libespeak-ng.{a,so,dylib}`.
-fn candidate_dirs(target_os: &str, target_arch: &str) -> Vec<String> {
+/// Run `ESPEAK_BUILD_SCRIPT` to compile `libespeak-ng.a` from source.
+/// Only invoked when `ESPEAK_LIB_DIR` is set but the archive is absent.
+fn run_espeak_build_script(script: &str, target_os: &str) {
+    if target_os != "macos" {
+        return; // Linux: system package managers provide the lib; no auto-build.
+    }
+
+    // Canonicalize to resolve any `..` components injected by .cargo/config.toml.
+    let script_path = std::fs::canonicalize(script)
+        .unwrap_or_else(|_| Path::new(script).to_path_buf());
+
+    if !script_path.exists() {
+        eprintln!(
+            "kittentts build.rs: ESPEAK_BUILD_SCRIPT={script:?} not found — skipping auto-build.\n\
+             Run manually:  bash scripts/build-espeak-static.sh"
+        );
+        return;
+    }
+
+    eprintln!("kittentts build.rs: libespeak-ng.a not found — running {} …", script_path.display());
+
+    // Augment PATH so cmake, libtool, nm, git are found even when Cargo
+    // launched us with a minimal PATH (no Homebrew prefix).
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let full_path = format!(
+        "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{current_path}"
+    );
+
+    // `exec 1>&2` merges the script's stdout into stderr so cmake build errors
+    // (which go to stdout) are visible in Cargo's `--- stderr` output.
+    // Without this, Cargo silently drops all non-`cargo:` stdout lines.
+    let shell_cmd = format!("exec 1>&2; bash '{}'", script_path.display());
+
+    let status = Command::new("bash")
+        .args(["-c", &shell_cmd])
+        .env("PATH", &full_path)
+        .status()
+        .unwrap_or_else(|e| panic!("kittentts build.rs: failed to launch {script:?}: {e}"));
+
+    if !status.success() {
+        panic!(
+            "\n\nkittentts build.rs: {script:?} failed ({status}).\n\
+             See the script output above for the exact error.\n\n"
+        );
+    }
+}
+
+/// Ordered list of directories to probe for `libespeak-ng.a`.
+/// Only directories that exist on this machine are returned.
+fn candidate_dirs(target_os: &str, target_arch: &str) -> Vec<PathBuf> {
     let mut dirs: Vec<String> = Vec::new();
 
     if target_os == "macos" {
@@ -252,8 +264,7 @@ fn candidate_dirs(target_os: &str, target_arch: &str) -> Vec<String> {
         if let Some(keg) = brew_prefix("espeak-ng") {
             dirs.push(format!("{keg}/lib"));
         }
-
-        // Canonical Homebrew keg-only path for arm64 and x86_64.
+        // Canonical Homebrew keg paths for arm64 and x86_64.
         for prefix in ["/opt/homebrew", "/usr/local"] {
             dirs.push(format!("{prefix}/opt/espeak-ng/lib"));
             dirs.push(format!("{prefix}/lib"));
@@ -275,10 +286,8 @@ fn candidate_dirs(target_os: &str, target_arch: &str) -> Vec<String> {
         dirs.extend(["/usr/lib64", "/usr/lib", "/usr/local/lib"].map(String::from));
     }
 
-    // Keep only directories that exist on this machine.
     dirs.into_iter()
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
-        .map(|p| p.to_string_lossy().into_owned())
         .collect()
 }

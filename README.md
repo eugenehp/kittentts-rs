@@ -10,7 +10,7 @@ A Rust port of [KittenTTS](https://github.com/KittenML/KittenTTS) — an ultra-l
 
 ## Features
 
-- **Zero native deps** — uses [tract-onnx](https://github.com/sonos/tract) (pure Rust) instead of ONNX Runtime
+- **ONNX Runtime inference** — uses [`ort`](https://github.com/pykeio/ort) (ORT 2.0 bindings) for fast CPU inference
 - **Full text preprocessing** — numbers, currencies, abbreviations, ordinals, units, etc. → spoken words
 - **espeak-ng phonemisation** — identical IPA output to the Python library
 - **Same ONNX models** — works with all KittenTTS HuggingFace checkpoints
@@ -43,7 +43,7 @@ Or add it manually to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kittentts = "0.1"
+kittentts = "0.2"
 ```
 
 ### Via GitHub
@@ -52,7 +52,7 @@ To use the latest unreleased code directly from the repository:
 
 ```sh
 # Clone and use as a local path dependency
-git clone https://github.com/KittenML/kittentts-rs
+git clone https://github.com/eugenehp/kittentts-rs
 ```
 
 ```toml
@@ -64,11 +64,11 @@ Or reference it as a git dependency without cloning manually:
 
 ```toml
 [dependencies]
-kittentts = { git = "https://github.com/KittenML/kittentts-rs" }
+kittentts = { git = "https://github.com/eugenehp/kittentts-rs" }
 
 # Pin to a specific branch or tag
-kittentts = { git = "https://github.com/KittenML/kittentts-rs", branch = "main" }
-kittentts = { git = "https://github.com/KittenML/kittentts-rs", tag = "v0.1.0" }
+kittentts = { git = "https://github.com/eugenehp/kittentts-rs", branch = "main" }
+kittentts = { git = "https://github.com/eugenehp/kittentts-rs", tag = "v0.2.0" }
 ```
 
 ## Quick Start
@@ -77,7 +77,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-kittentts = "0.1"
+kittentts = "0.2"
 ```
 
 ```rust
@@ -196,7 +196,7 @@ If you use kittentts-rs in your research or project, please cite:
   author    = {Eugene Hauptmann},
   title     = {kittentts-rs: A Rust Port of KittenTTS},
   year      = {2026},
-  url       = {https://github.com/KittenML/kittentts-rs},
+  url       = {https://github.com/eugenehp/kittentts-rs},
   note      = {Ultra-lightweight, CPU-only text-to-speech engine based on ONNX models}
 }
 ```
@@ -208,9 +208,13 @@ If you also use the underlying KittenTTS models, please additionally cite the or
   author    = {KittenML},
   title     = {KittenTTS},
   year      = {2024},
-  url       = {https://github.com/KittenML/KittenTTS}
+  url       = {https://github.com/eugenehp/KittenTTS}
 }
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a full history of releases and changes.
 
 ## License
 
