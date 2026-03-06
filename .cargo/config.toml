@@ -1,0 +1,9 @@
+# ── macOS deployment target ────────────────────────────────────────────────────
+# ORT ms@1.23.2 (ort-sys 2.0.0-rc.11) ships libonnxruntime.a built for macOS 13.4.
+# Xcode 26+ enforces availability annotations strictly; setting the deployment
+# target here ensures the Rust toolchain and cc crate agree on the minimum version.
+#
+# force=true prevents a system-level MACOSX_DEPLOYMENT_TARGET from overriding this.
+
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "13.4", force = true }
