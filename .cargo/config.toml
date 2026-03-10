@@ -1,9 +1,16 @@
-# ── macOS deployment target ────────────────────────────────────────────────────
-# ORT ms@1.23.2 (ort-sys 2.0.0-rc.11) ships libonnxruntime.a built for macOS 13.4.
-# Xcode 26+ enforces availability annotations strictly; setting the deployment
-# target here ensures the Rust toolchain and cc crate agree on the minimum version.
+# ── Cross-compilation linker config ─────────────────────────────────────────
 #
-# force=true prevents a system-level MACOSX_DEPLOYMENT_TARGET from overriding this.
+# Zig ships a built-in C cross-compiler that works as a drop-in linker for
+# every target Rust supports. cargo-zigbuild wraps Cargo's normal build
+# with zig cc as the linker, removing the need for platform-specific MinGW or
+# musl-cross toolchains on the host.
 
-[env]
-MACOSX_DEPLOYMENT_TARGET = { value = "13.4", force = true }
+[target.x86_64-pc-windows-gnu]
+# cargo-zigbuild supplies the Windows linker automatically.
+# Manual builds: RUSTFLAGS="-C linker=x86_64-w64-mingw32-gcc" cargo build --target …
+
+[target.x86_64-unknown-linux-gnu]
+# cargo-zigbuild supplies the GNU/glibc cross-linker automatically.
+
+[target.x86_64-unknown-linux-musl]
+# cargo-zigbuild supplies the musl cross-linker automatically.

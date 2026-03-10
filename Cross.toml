@@ -1,0 +1,174 @@
+# =============================================================================
+# Cross.toml — configuration for `cargo cross`
+# https://github.com/cross-rs/cross
+#
+# Usage (with the `espeak` feature):
+#
+#   cargo install cross --git https://github.com/cross-rs/cross
+#
+#   cross build --target aarch64-unknown-linux-gnu  --features espeak
+#   cross build --target armv7-unknown-linux-gnueabihf --features espeak
+#   cross build --target x86_64-unknown-linux-musl  --features espeak
+#   cross build --target riscv64gc-unknown-linux-gnu --features espeak
+#
+# Without `--features espeak` no native library is needed and every target
+# works out of the box with no pre-build steps.
+#
+# The `pre-build` commands run as root inside the cross Docker container
+# (Ubuntu-based) immediately before `cargo build`.  They install
+# libespeak-ng-dev for the target architecture via Debian multiarch.
+#
+# Musl targets use Alpine-based images where `apk` is available; the
+# `espeak-ng-static` package from Alpine provides libespeak-ng.a for musl.
+# =============================================================================
+
+# ── Global settings ─────────────────────────────────────────────────────────
+[build]
+# Pass build-time env vars into the container.
+# ESPEAK_SYSROOT is intentionally excluded — inside the cross container the
+# multiarch paths are always at the standard Debian locations.
+env.passthrough = [
+    "ESPEAK_LIB_DIR",
+    "ESPEAK_TAG",
+    "ANDROID_NDK_HOME",
+    "ORT_LIB_LOCATION",
+    "ORT_PREFER_DYNAMIC_LINK",
+]
+
+# ── Linux GNU targets (Debian/Ubuntu multiarch) ──────────────────────────────
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:arm64",
+]
+
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = [
+    "dpkg --add-architecture armhf",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:armhf",
+]
+
+[target.arm-unknown-linux-gnueabihf]
+pre-build = [
+    "dpkg --add-architecture armhf",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:armhf",
+]
+
+[target.arm-unknown-linux-gnueabi]
+pre-build = [
+    "dpkg --add-architecture armel",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:armel",
+]
+
+[target.i686-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture i386",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:i386",
+]
+
+[target.x86_64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev",
+]
+
+[target.riscv64gc-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture riscv64",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:riscv64",
+]
+
+[target.powerpc64le-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture ppc64el",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:ppc64el",
+]
+
+[target.s390x-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture s390x",
+    "apt-get update -qq",
+    "apt-get install -y --no-install-recommends libespeak-ng-dev:s390x",
+]
+
+# ── Linux musl targets (Alpine-based cross images) ───────────────────────────
+#
+# cross uses alpine-based images for musl targets where `apk` is the package
+# manager.  `espeak-ng-static` provides libespeak-ng.a built for musl libc.
+
+[target.x86_64-unknown-linux-musl]
+pre-build = [
+    "apk add --no-cache espeak-ng-dev espeak-ng-static",
+]
+
+[target.aarch64-unknown-linux-musl]
+pre-build = [
+    "apk add --no-cache espeak-ng-dev espeak-ng-static",
+]
+
+[target.armv7-unknown-linux-musleabihf]
+pre-build = [
+    "apk add --no-cache espeak-ng-dev espeak-ng-static",
+]
+
+[target.arm-unknown-linux-musleabihf]
+pre-build = [
+    "apk add --no-cache espeak-ng-dev espeak-ng-static",
+]
+
+[target.i686-unknown-linux-musl]
+pre-build = [
+    "apk add --no-cache espeak-ng-dev espeak-ng-static",
+]
+
+# ── Android targets ───────────────────────────────────────────────────────────
+#
+# espeak-ng must be cross-compiled for Android separately using the NDK.
+# The cross Docker image does not have espeak-ng for Android.
+#
+# Recommended workflow:
+#   1. Build espeak-ng for Android with the dedicated script:
+#        ESPEAK_LIB_DIR=$PWD/espeak-static/android/lib \
+#        ESPEAK_TARGET=aarch64-linux-android \
+#        ANDROID_NDK_HOME=/path/to/ndk \
+#          bash scripts/build-espeak-static.sh
+#
+#   2. Pass the path to cross:
+#        ESPEAK_LIB_DIR=$PWD/espeak-static/android/lib \
+#          cross build --target aarch64-linux-android --features espeak
+#
+# Or use the full Android build script which handles everything:
+#   bash android/build_rust_android.sh
+
+[target.aarch64-linux-android]
+# No pre-build — ESPEAK_LIB_DIR must be set by the caller (see above).
+
+[target.armv7-linux-androideabi]
+# No pre-build — ESPEAK_LIB_DIR must be set by the caller.
+
+[target.x86_64-linux-android]
+# No pre-build — ESPEAK_LIB_DIR must be set by the caller.
+
+[target.i686-linux-android]
+# No pre-build — ESPEAK_LIB_DIR must be set by the caller.
+
+# ── Windows (MinGW) targets ───────────────────────────────────────────────────
+#
+# cross uses a Wine-based image for Windows GNU targets.
+# espeak-ng for MinGW is not available in the standard cross images.
+# Use ESPEAK_LIB_DIR pointing at a pre-built MinGW libespeak-ng.a, or
+# build it on a Windows host with scripts\build-espeak-static.ps1.
+
+[target.x86_64-pc-windows-gnu]
+# No pre-build — ESPEAK_LIB_DIR must be set by the caller.
+
+[target.i686-pc-windows-gnu]
+# No pre-build — ESPEAK_LIB_DIR must be set by the caller.

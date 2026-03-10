@@ -1,6 +1,6 @@
 [package]
 name = "kittentts"
-version = "0.2.2"
+version = "0.2.4"
 edition = "2021"
 authors = ["Eugene Hauptmann"]
 description = "Rust port of KittenTTS — lightweight ONNX-based text-to-speech"
@@ -95,12 +95,15 @@ thiserror = "1"
 # HuggingFace Hub for model download — desktop only.
 # hf-hub's default "native-tls" feature pulls in openssl-sys which cannot be
 # cross-compiled for iOS/Android without a full SDK.  Mobile apps bundle models.
-hf-hub = "0.5"
+#
+# We disable the default native-tls feature and use the ureq backend instead
+# (ureq v3 uses rustls by default — no OpenSSL needed, cross-compilation friendly).
+hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
 ort = { version = "=2.0.0-rc.11", default-features = false, features = [
     "std",
     "pkg-config",        # try system libonnxruntime first (graceful no-op if absent)
     "download-binaries", # fallback: fetch pre-built static libonnxruntime.a from Pyke CDN
-    "tls-native",        # TLS via OpenSSL/Secure-Transport (available on desktop)
+    "tls-rustls",        # pure-Rust TLS — cross-compilation friendly (no OpenSSL required)
     # copy-dylibs intentionally omitted: the Pyke CDN tarball ships libonnxruntime.a
     # (linked statically via cargo:rustc-link-lib=static=onnxruntime) alongside optional
     # provider dylibs.  copy-dylibs would copy those provider dylibs next to the binary,

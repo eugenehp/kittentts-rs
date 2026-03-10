@@ -6,6 +6,10 @@
 //! ## Quick start
 //!
 //! ```no_run
+//! # // generate / generate_to_file require the `espeak` feature.
+//! # // Hidden cfg guards keep this example compiling in both configurations.
+//! # #[cfg(not(feature = "espeak"))] fn main() {}
+//! # #[cfg(feature = "espeak")] fn main() {
 //! use kittentts::{KittenTTS, download};
 //!
 //! // Download the model from HuggingFace (cached after first run)
@@ -22,6 +26,7 @@
 //!     1.0,
 //!     true,
 //! ).unwrap();
+//! # }
 //! ```
 //!
 //! ## Mobile (iOS / Android)
