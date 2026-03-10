@@ -19,6 +19,7 @@
 //! |----------------------|------------------------------------------------|
 //! | Alpine / Linux       | `apk add espeak-ng-dev` / `apt install libespeak-ng-dev` |
 //! | macOS (Homebrew)     | `brew install espeak-ng`                       |
+//! | Windows              | **Automatic** — build.rs clones + compiles espeak-ng via cmake. Requires `cmake` and `git` in PATH. `espeak-ng-data` is wired up automatically for `cargo run`/`cargo test`. For distribution, ship `espeak-ng-data/` next to the binary. |
 //! | iOS / Android        | Cross-compiled `libespeak-ng.{a,so}`; set `ESPEAK_LIB_DIR` at build time and [`set_data_path`] at runtime |
 //!
 //! ## Mobile setup (espeak feature)
@@ -128,8 +129,42 @@ mod inner {
     /// Called exactly once (inside LOCK) to initialise the espeak-ng library.
     pub(super) fn do_init() -> std::result::Result<(), String> {
         unsafe {
-            // Build a CString for the data path, or use NULL for system default.
-            let path_cstr: Option<CString> = DATA_PATH.get().map(|p| {
+            // ── Resolve the espeak-ng-data path ──────────────────────────────
+            //
+            // Priority order:
+            //
+            //   1. Explicitly set by the caller via `set_data_path()`.
+            //
+            //   2. Compile-time path baked in by build.rs when it auto-built
+            //      espeak-ng or found a non-system install (Windows).
+            //      Available via `option_env!("KITTENTTS_ESPEAK_DATA_DIR")`.
+            //      Works for `cargo run` / `cargo test` with no user setup.
+            //
+            //   3. A directory named `espeak-ng-data` next to the running
+            //      executable.  This is the recommended layout for distributed
+            //      binaries: ship `espeak-ng-data/` alongside the .exe.
+            //
+            //   4. NULL → espeak-ng searches its compiled-in system data path.
+            //      Correct for system package installs on Linux / macOS.
+
+            let resolved: Option<std::path::PathBuf> =
+                // 1. Explicit caller override.
+                DATA_PATH.get().cloned()
+                // 2. Compile-time path from build.rs (Windows auto-build or
+                //    custom ESPEAK_LIB_DIR with data found nearby).
+                .or_else(|| {
+                    option_env!("KITTENTTS_ESPEAK_DATA_DIR")
+                        .map(std::path::PathBuf::from)
+                        .filter(|p| p.is_dir())
+                })
+                // 3. Directory next to the current executable (distribution layout).
+                .or_else(|| {
+                    std::env::current_exe().ok()
+                        .and_then(|exe| exe.parent().map(|d| d.join("espeak-ng-data")))
+                        .filter(|p| p.is_dir())
+                });
+
+            let path_cstr: Option<CString> = resolved.map(|p| {
                 CString::new(p.to_string_lossy().as_bytes())
                     .expect("espeak data path contains a null byte")
             });

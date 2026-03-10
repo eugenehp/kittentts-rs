@@ -55,6 +55,7 @@
 //! |--------------------|------------------------------------------------------|
 //! | Alpine / Linux     | `apk add espeak-ng-dev` / `apt install libespeak-ng-dev` |
 //! | macOS (Homebrew)   | `brew install espeak-ng`                             |
+//! | Windows            | **Automatic** — requires `cmake` + `git` in PATH; build.rs clones and compiles espeak-ng. `espeak-ng-data` is wired up automatically. |
 //! | iOS / Android      | Cross-compiled `libespeak-ng.{a,so}`; set `ESPEAK_LIB_DIR` at build time |
 //!
 //! ## Pipeline (matches Python implementation)

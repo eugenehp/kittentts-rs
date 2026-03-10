@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-03-10
+
+### Added
+
+- **Windows zero-config espeak-ng auto-build** (`build.rs` step 4): when the
+  `espeak` feature is enabled on a native Windows host and no
+  `ESPEAK_LIB_DIR` is set, the build script automatically:
+  - Clones `espeak-ng` from GitHub (tag `1.52.0`, shallow clone) into
+    `$OUT_DIR/espeak-auto/`.
+  - Compiles it as a static library with cmake, using either the MSVC
+    generator (when `cl.exe` is reachable) or `"MinGW Makefiles"` (when
+    MSYS2 gcc is present).
+  - Links `espeak-ng.lib` / `libespeak-ng.a` statically.
+  - Bakes the path to `espeak-ng-data/` as a compile-time env var
+    (`KITTENTTS_ESPEAK_DATA_DIR`) so `cargo run` / `cargo test` work
+    immediately without any manual data setup.
+  - Uses a stamp file (`built-<tag>.stamp`) to skip the clone + build on
+    subsequent `cargo build` calls.
+  - Override version with `ESPEAK_TAG`; bypass entirely with
+    `ESPEAK_LIB_DIR` pointing at a pre-built archive.
+
+- **espeak-ng data path fallback chain** (`src/phonemize.rs`): `do_init()`
+  now resolves the data directory through four levels:
+  1. `set_data_path()` / `DATA_PATH` OnceCell (runtime override via the
+     public API).
+  2. `KITTENTTS_ESPEAK_DATA_DIR` compile-time env var (baked in by the
+     Windows auto-build).
+  3. `<exe_dir>/espeak-ng-data/` checked at runtime (supports shipping the
+     data folder next to the `.exe`).
+  4. `NULL` — lets espeak-ng use its compiled-in default (works on
+     Linux/macOS where the package manager places data at a known path).
+
+- **`scripts/test-windows-cross.sh`** — shell script for testing the Windows
+  cross-compilation from Linux or macOS:
+  - Uses `cargo-zigbuild` + `zig` as the cross-linker.
+  - Downloads the official Microsoft ORT Windows ZIP automatically, parses
+    the DLL's PE export table with an embedded Python script (no extra deps),
+    and creates a GNU import library (`libonnxruntime.dll.a`) via
+    `zig dlltool` / `llvm-dlltool` / `x86_64-w64-mingw32-dlltool`.
+  - `--espeak`: cross-compiles espeak-ng for Windows using
+    `x86_64-w64-mingw32-gcc` and cmake.
+  - `--wine`: runs the compiled test binary under Wine after a successful
+    build, with the ORT DLL on `WINEPATH`.
+  - `--clean`: deletes cached ORT download and espeak build directories.
+  - Caches downloads and espeak builds between runs (stamp files).
+
+- **`scripts/test-windows-native.ps1`** — PowerShell script for building
+  and testing kittentts natively on Windows:
+  - Checks prerequisites: `cargo`, `git`, `cmake`, and a C compiler (MSVC
+    or MinGW).  Auto-activates MSVC via `vswhere.exe` + `vcvars64.bat` when
+    not already in PATH; auto-detects MSYS2/MinGW64 at `$env:MSYS2_PATH`
+    (default `C:\msys64`).
+  - `-Espeak`: runs `cargo test --features espeak`, which triggers the
+    zero-config auto-build of espeak-ng (see above).
+  - `-EspeakOnly`, `-BuildOnly`, `-Clean`, `-Verbose` flags for CI flexibility.
+  - Prints a colour-coded pass/fail summary; exits non-zero on any failure.
+  - Reminds the user to ship `espeak-ng-data/` next to the `.exe` when
+    distributing.
+
+### Changed
+
+- `build.rs`: added `find_espeak_data_near_lib()` and `emit_espeak_data()`
+  helper functions; called at all three existing successful lib-location
+  paths on Windows (explicit `ESPEAK_LIB_DIR`, static platform-path-walk
+  branch, dynamic platform-path-walk branch) so
+  `KITTENTTS_ESPEAK_DATA_DIR` is always set on Windows regardless of how
+  espeak-ng was found.
+
+---
+
 ## [0.2.4] - 2026-03-10
 
 ### Added
@@ -221,6 +291,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/basic.rs` — CLI example with `--voice`, `--text`, and `--output`
   flags.
 
+[0.2.5]: https://github.com/eugenehp/kittentts-rs/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/eugenehp/kittentts-rs/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/eugenehp/kittentts-rs/compare/v0.2.0...v0.2.3
 [0.2.0]: https://github.com/eugenehp/kittentts-rs/compare/v0.1.0...v0.2.0

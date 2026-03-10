@@ -17,6 +17,13 @@
 //! 3. **Platform path walk** — well-known directories for each target OS,
 //!    prefixed with `ESPEAK_SYSROOT` when set.
 //!
+//! 4. **Windows auto-build** — if nothing is found and the host is Windows,
+//!    the build script clones espeak-ng from GitHub and compiles it with cmake
+//!    (MSVC or MinGW).  Requires `cmake` and `git` in PATH.  The compiled
+//!    `espeak-ng-data/` directory is exposed to the library via the
+//!    `KITTENTTS_ESPEAK_DATA_DIR` compile-time env var so that phonemisation
+//!    works out of the box for `cargo run` / `cargo test`.
+//!
 //! If nothing is found the build panics with platform-specific instructions.
 //!
 //! ## Native builds (quick-start)
@@ -26,7 +33,7 @@
 //! Ubuntu :  sudo apt install libespeak-ng-dev
 //! Alpine :  apk add espeak-ng-dev espeak-ng-static
 //! Arch   :  sudo pacman -S espeak-ng
-//! Windows:  see panic message for options
+//! Windows:  automatic (cmake + git required); or set ESPEAK_LIB_DIR manually
 //! ```
 //!
 //! ## Cross-compilation
@@ -121,6 +128,9 @@ fn main() {
         return;
     }
 
+    // Cargo output directory — used as scratch space for the Windows auto-build.
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
+
     // Sysroot used to prefix candidate lib dirs when cross-compiling.
     let sysroot: Option<String> = std::env::var("ESPEAK_SYSROOT").ok()
         .filter(|s| !s.is_empty());
@@ -140,6 +150,13 @@ fn main() {
             }
         }
         link_static_from_dir(&dir, &target_os, &target_env);
+        // On Windows, try to find and expose the espeak-ng-data directory so
+        // the library can initialise without the user calling set_data_path().
+        if target_os == "windows" {
+            if let Some(data) = find_espeak_data_near_lib(&dir, &target_os) {
+                emit_espeak_data(&data);
+            }
+        }
         return;
     }
 
@@ -199,16 +216,50 @@ fn main() {
         let dir_str = dir.to_string_lossy().into_owned();
         if static_lib_exists(&dir_str, &target_os, &target_env) {
             emit_static_link(&dir_str, &target_os, &target_env);
+            if target_os == "windows" {
+                if let Some(data) = find_espeak_data_near_lib(&dir_str, &target_os) {
+                    emit_espeak_data(&data);
+                }
+            }
             return;
         }
         if matches!(target_os.as_str(), "linux" | "windows") && has_dylib(&dir_str, &target_os) {
             println!("cargo:rustc-link-search=native={dir_str}");
             println!("cargo:rustc-link-lib=espeak-ng");
+            if target_os == "windows" {
+                if let Some(data) = find_espeak_data_near_lib(&dir_str, &target_os) {
+                    emit_espeak_data(&data);
+                }
+            }
             return;
         }
     }
 
-    // ── 4. Nothing found ──────────────────────────────────────────────────────
+    // ── 4. Windows auto-build (native host only, not cross-compilation) ───────
+    //
+    // When nothing was found and we are building FOR Windows ON Windows, clone
+    // espeak-ng from GitHub and compile it with cmake.  This requires `git` and
+    // `cmake` to be in PATH (both are available on GitHub Actions windows-latest
+    // runners and in a typical VS / MSYS2 dev environment).
+    if target_os == "windows" && host_os == "windows" && !is_cross {
+        match auto_build_espeak_windows(&out_dir, &target_arch, &target_env) {
+            Some((lib_dir, data_dir)) => {
+                emit_static_link(&lib_dir, &target_os, &target_env);
+                emit_espeak_data(&data_dir);
+                return;
+            }
+            None => {
+                eprintln!(
+                    "cargo:warning=kittentts: Windows auto-build failed. \
+                     Set ESPEAK_LIB_DIR to a pre-built espeak-ng lib dir, \
+                     or install cmake + git so the auto-build can proceed."
+                );
+                // Fall through to the instructions panic below.
+            }
+        }
+    }
+
+    // ── 5. Nothing found ──────────────────────────────────────────────────────
     let lib = static_lib_name(&target_os, &target_env);
     let cross_hint = if is_cross {
         format!(
@@ -233,10 +284,13 @@ fn main() {
          {cross_hint}\n\
          Native install instructions:\n\
          \n\
-         \t  Windows (MSVC) :  Install from https://github.com/espeak-ng/espeak-ng/releases\n\
-         \t                     or:  vcpkg install espeak-ng:x64-windows-static\n\
-         \t                     or:  pacman -S mingw-w64-x86_64-espeak-ng  (MSYS2)\n\
-         \t                     Then: ESPEAK_LIB_DIR=C:\\path\\to\\espeak-ng\\lib\n\
+         \t  Windows        :  Automatic via cmake + git (install both and retry)\n\
+         \t                     cmake : https://cmake.org/  or  winget install Kitware.CMake\n\
+         \t                     git   : https://git-scm.com/  or  winget install Git.Git\n\
+         \t                     MinGW : install MSYS2 (https://www.msys2.org/) then\n\
+         \t                             pacman -S mingw-w64-x86_64-gcc cmake\n\
+         \t                     Manual: vcpkg install espeak-ng:x64-windows-static\n\
+         \t                             then: ESPEAK_LIB_DIR=<vcpkg>\\installed\\x64-windows-static\\lib\n\
          \t  macOS           :  brew install espeak-ng\n\
          \t  Ubuntu/Debian   :  sudo apt install libespeak-ng-dev\n\
          \t  Fedora          :  sudo dnf install espeak-ng-devel\n\
@@ -816,4 +870,313 @@ fn run_espeak_build_script(
              See the output above for the exact error.\n\n"
         );
     }
+}
+
+// ── Windows auto-build ────────────────────────────────────────────────────────
+//
+// When the `espeak` feature is enabled on a Windows host and no pre-installed
+// libespeak-ng is found, these helpers clone the espeak-ng source from GitHub
+// and compile it with cmake into Cargo's OUT_DIR scratch space.  The result is
+// a self-contained static archive that is linked automatically.
+//
+// The espeak-ng-data directory that is produced by `cmake --install` is exposed
+// to the Rust library via the `KITTENTTS_ESPEAK_DATA_DIR` compile-time env var
+// (see phonemize::do_init for how it is consumed).
+
+/// Auto-build espeak-ng from source on a Windows host.
+///
+/// Returns `Some((lib_dir, data_dir))` on success or `None` on any failure.
+/// Progress is forwarded to Cargo as `cargo:warning=` messages so the user
+/// can see what is happening during the (potentially long) first build.
+fn auto_build_espeak_windows(
+    out_dir:     &str,
+    target_arch: &str,
+    target_env:  &str,
+) -> Option<(String, PathBuf)> {
+    let tag      = std::env::var("ESPEAK_TAG").unwrap_or_else(|_| "1.52.0".to_owned());
+    let base     = Path::new(out_dir).join("espeak-auto");
+    let src      = base.join("src");
+    let bld      = base.join("cmake-build");
+    let inst     = base.join("install");
+    let lib_name = static_lib_name("windows", target_env);
+    let lib_path = inst.join("lib").join(lib_name);
+    let stamp    = base.join(format!("built-{}.stamp", tag));
+
+    // ── Already built? ────────────────────────────────────────────────────────
+    if stamp.exists() && lib_path.exists() {
+        eprintln!("cargo:warning=kittentts: using cached espeak-ng build in {}", base.display());
+        let lib_dir = inst.join("lib").to_string_lossy().into_owned();
+        return find_espeak_data_near_lib(&lib_dir, "windows")
+            .map(|data| (lib_dir, data));
+    }
+
+    std::fs::create_dir_all(&base).ok()?;
+
+    // ── Locate required tools ─────────────────────────────────────────────────
+    let cmake = match find_cmake() {
+        Some(c) => c,
+        None => {
+            eprintln!(
+                "cargo:warning=kittentts: cmake not found — cannot auto-build espeak-ng.\n\
+                 cargo:warning=kittentts: Install cmake:  winget install Kitware.CMake\n\
+                 cargo:warning=kittentts:                 https://cmake.org/download/"
+            );
+            return None;
+        }
+    };
+    let git = match find_git() {
+        Some(g) => g,
+        None => {
+            eprintln!(
+                "cargo:warning=kittentts: git not found — cannot auto-build espeak-ng.\n\
+                 cargo:warning=kittentts: Install git:  winget install Git.Git\n\
+                 cargo:warning=kittentts:               https://git-scm.com/"
+            );
+            return None;
+        }
+    };
+
+    // ── Clone espeak-ng source ────────────────────────────────────────────────
+    if !src.join("CMakeLists.txt").exists() {
+        eprintln!("cargo:warning=kittentts: cloning espeak-ng {} …", tag);
+        let ok = Command::new(&git)
+            .args([
+                "clone", "--depth", "1", "--branch", &tag,
+                "https://github.com/espeak-ng/espeak-ng.git",
+            ])
+            .arg(&src)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("cargo:warning=kittentts: git clone failed");
+            return None;
+        }
+        eprintln!("cargo:warning=kittentts: clone complete");
+    }
+
+    // ── CMake configure ───────────────────────────────────────────────────────
+    // Clean the build directory so a failed previous run doesn't poison this one.
+    let _ = std::fs::remove_dir_all(&bld);
+    std::fs::create_dir_all(&bld).ok()?;
+    std::fs::create_dir_all(&inst).ok()?;
+
+    let msys2   = find_msys2_root();
+    let use_mingw = target_env != "msvc" && msys2.is_some();
+
+    eprintln!("cargo:warning=kittentts: configuring espeak-ng with cmake …");
+
+    let mut cfg = Command::new(&cmake);
+    cfg.arg("-S").arg(&src)
+       .arg("-B").arg(&bld)
+       .arg("-DCMAKE_BUILD_TYPE=Release")
+       .arg(format!("-DCMAKE_INSTALL_PREFIX={}", inst.display()))
+       .arg("-DBUILD_SHARED_LIBS=OFF")
+       .arg("-DUSE_ASYNC=OFF")
+       .arg("-DWITH_ASYNC=OFF")
+       .arg("-DWITH_PCAUDIOLIB=OFF")
+       .arg("-DWITH_SPEECHPLAYER=OFF")
+       .arg("-DWITH_SONIC=OFF")
+       .arg("-DUSE_KLATT=OFF")
+       .arg("-DCMAKE_DISABLE_FIND_PACKAGE_SpeechPlayer=TRUE")
+       .arg("-DCMAKE_DISABLE_FIND_PACKAGE_PcAudio=TRUE")
+       .arg("-Wno-dev");
+
+    if use_mingw {
+        // MinGW/MSYS2 toolchain — use explicit gcc so cmake doesn't pick MSVC.
+        let msys2_root = msys2.as_deref().unwrap();
+        let mingw_bin  = Path::new(msys2_root).join("mingw64").join("bin");
+        cfg.arg("-G").arg("MinGW Makefiles")
+           .arg(format!("-DCMAKE_C_COMPILER={}", mingw_bin.join("gcc.exe").display()))
+           .arg(format!("-DCMAKE_CXX_COMPILER={}", mingw_bin.join("g++.exe").display()));
+        // Add MinGW bin to PATH so cmake can find make/ninja.
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cfg.env("PATH", format!("{};{}", mingw_bin.display(), current_path));
+    } else {
+        // MSVC / auto-detect.  On Windows cmake defaults to the VS generator.
+        // Pass -A to pin the architecture (prevents 32-bit default on older cmake).
+        let vs_arch = match target_arch {
+            "aarch64"      => "ARM64",
+            "x86" | "i686" => "Win32",
+            _              => "x64",
+        };
+        // -A is a Visual Studio generator option; only pass it when cl.exe is
+        // reachable (i.e. a VS environment is active).  Otherwise let cmake
+        // pick the best available generator without the flag.
+        if is_cl_available() {
+            cfg.arg(format!("-A{vs_arch}"));
+        }
+    }
+
+    let ok = cfg.status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("cargo:warning=kittentts: cmake configure failed");
+        return None;
+    }
+
+    // ── CMake build ───────────────────────────────────────────────────────────
+    let jobs = std::thread::available_parallelism()
+        .map(|n| n.get().to_string())
+        .unwrap_or_else(|_| "4".to_owned());
+    eprintln!("cargo:warning=kittentts: building espeak-ng ({jobs} jobs) …");
+
+    let ok = Command::new(&cmake)
+        .arg("--build").arg(&bld)
+        .arg("--config").arg("Release")
+        .arg("--parallel").arg(&jobs)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("cargo:warning=kittentts: cmake build failed");
+        return None;
+    }
+
+    // ── CMake install ─────────────────────────────────────────────────────────
+    eprintln!("cargo:warning=kittentts: installing espeak-ng …");
+    let ok = Command::new(&cmake)
+        .arg("--install").arg(&bld)
+        .arg("--config").arg("Release")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("cargo:warning=kittentts: cmake install failed");
+        return None;
+    }
+
+    // ── Verify the library was produced ──────────────────────────────────────
+    if !lib_path.exists() {
+        eprintln!("cargo:warning=kittentts: {} not found after install", lib_name);
+        return None;
+    }
+
+    // ── Write stamp so subsequent builds skip the heavy compile step ──────────
+    let _ = std::fs::write(&stamp, &tag);
+    eprintln!("cargo:warning=kittentts: espeak-ng build complete");
+
+    // ── Locate data directory ─────────────────────────────────────────────────
+    let lib_dir = inst.join("lib").to_string_lossy().into_owned();
+    find_espeak_data_near_lib(&lib_dir, "windows")
+        .map(|data| (lib_dir, data))
+}
+
+/// Search for the `espeak-ng-data` directory relative to a library directory.
+///
+/// Tries several candidate locations: next to the lib dir, in a sibling
+/// `share/` directory, and on Windows the default installer location under
+/// `%PROGRAMFILES%\eSpeak NG`.
+fn find_espeak_data_near_lib(lib_dir: &str, target_os: &str) -> Option<PathBuf> {
+    let base   = Path::new(lib_dir);
+    let parent = base.parent().unwrap_or(base);
+
+    let mut candidates = vec![
+        // cmake installs data into <prefix>/lib/espeak-ng-data
+        base.join("espeak-ng-data"),
+        // some distros use <prefix>/share/espeak-ng-data
+        parent.join("share").join("espeak-ng-data"),
+        // sibling lib dir (e.g. lib64 → lib/espeak-ng-data)
+        parent.join("lib").join("espeak-ng-data"),
+        // directly next to the prefix
+        parent.join("espeak-ng-data"),
+    ];
+
+    // Windows: official installer default locations.
+    if target_os == "windows" {
+        for pf_var in &["PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432"] {
+            if let Ok(pf) = std::env::var(pf_var) {
+                candidates.push(PathBuf::from(&pf).join("eSpeak NG").join("espeak-ng-data"));
+                candidates.push(PathBuf::from(&pf).join("eSpeak NG").join("lib").join("espeak-ng-data"));
+            }
+        }
+    }
+
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+/// Emit `cargo:rustc-env=KITTENTTS_ESPEAK_DATA_DIR=<path>` so the Rust library
+/// can find `espeak-ng-data` at compile time without user configuration.
+///
+/// The path is baked into the binary as `option_env!("KITTENTTS_ESPEAK_DATA_DIR")`
+/// and used as a fallback in `phonemize::do_init` when no explicit data path
+/// was provided via `set_data_path()`.
+fn emit_espeak_data(data_dir: &Path) {
+    println!("cargo:rustc-env=KITTENTTS_ESPEAK_DATA_DIR={}", data_dir.display());
+}
+
+/// Return the path to `cmake` if it can be found, checking PATH and the common
+/// Windows install locations (standalone CMake and VS-bundled CMake).
+fn find_cmake() -> Option<String> {
+    // Fast path: cmake is already in PATH.
+    if Command::new("cmake").arg("--version")
+        .output().map(|o| o.status.success()).unwrap_or(false)
+    {
+        return Some("cmake".to_owned());
+    }
+
+    // Standalone cmake installer default.
+    for candidate in &[
+        r"C:\Program Files\CMake\bin\cmake.exe",
+        r"C:\Program Files (x86)\CMake\bin\cmake.exe",
+    ] {
+        if Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    // Visual Studio bundles cmake under the IDE extensions directory.
+    for year in &["2022", "2019", "2017"] {
+        for edition in &["Community", "Professional", "Enterprise", "BuildTools"] {
+            let p = format!(
+                r"C:\Program Files\Microsoft Visual Studio\{year}\{edition}\
+Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+            );
+            if Path::new(&p).exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    None
+}
+
+/// Return the path to `git` if it can be found, checking PATH and the common
+/// Git for Windows install location.
+fn find_git() -> Option<String> {
+    if Command::new("git").arg("--version")
+        .output().map(|o| o.status.success()).unwrap_or(false)
+    {
+        return Some("git".to_owned());
+    }
+    for candidate in &[
+        r"C:\Program Files\Git\bin\git.exe",
+        r"C:\Program Files (x86)\Git\bin\git.exe",
+    ] {
+        if Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Find the MSYS2 root directory by checking `MSYS2_PATH` and common locations.
+/// Returns `None` if MSYS2 is not installed or MinGW64 gcc is not present.
+fn find_msys2_root() -> Option<String> {
+    if let Ok(path) = std::env::var("MSYS2_PATH") {
+        if Path::new(&path).join("mingw64").join("bin").join("gcc.exe").exists() {
+            return Some(path);
+        }
+    }
+    for candidate in &[r"C:\msys64", r"C:\msys2", r"C:\tools\msys64"] {
+        if Path::new(candidate).join("mingw64").join("bin").join("gcc.exe").exists() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Return `true` if `cl.exe` (MSVC compiler) is reachable in the current PATH.
+/// Used to decide whether to pass `-A <arch>` to cmake (VS-generator-only flag).
+fn is_cl_available() -> bool {
+    Command::new("cl").output().map(|_| true).unwrap_or(false)
 }

@@ -39,7 +39,11 @@ sudo dnf install espeak-ng-devel
 # Arch Linux
 sudo pacman -S espeak-ng
 
-# Windows (MSVC) — choose one:
+# Windows — zero-config auto-build (requires git + cmake in PATH):
+#   cargo build --features espeak
+#   ↑ clones + compiles espeak-ng from GitHub automatically on first build.
+#
+# Or pre-install manually (choose one):
 #   Option A: official installer → https://github.com/espeak-ng/espeak-ng/releases
 #   Option B: vcpkg
 vcpkg install espeak-ng:x64-windows-static
@@ -58,11 +62,11 @@ input still works; only text-to-IPA conversion (and therefore the high-level
 
 # Without espeak-ng (IPA input only — no native library needed)
 [dependencies]
-kittentts = "0.2"
+kittentts = "0.2.5"
 
 # With espeak-ng (full text input)
 [dependencies]
-kittentts = { version = "0.2", features = ["espeak"] }
+kittentts = { version = "0.2.5", features = ["espeak"] }
 ```
 
 Or add it with cargo:
@@ -76,7 +80,7 @@ cargo add kittentts --features espeak
 
 ```toml
 [dependencies]
-kittentts = { git = "https://github.com/eugenehp/kittentts-rs", tag = "v0.2.4" }
+kittentts = { git = "https://github.com/eugenehp/kittentts-rs", tag = "v0.2.5" }
 kittentts = { git = "https://github.com/eugenehp/kittentts-rs", branch = "main" }
 ```
 
@@ -206,8 +210,9 @@ rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
 # Linux x86_64 — ORT static lib downloaded automatically
 cargo zigbuild --target x86_64-unknown-linux-gnu
 
-# Windows x64 — requires llvm-dlltool to generate an ORT import library
-#   (one-time setup; replace /path/to/ort with your ORT Windows DLL directory)
+# Windows x64 — ORT import library created automatically by the test script,
+# or manually: download the ORT Windows ZIP, run llvm-dlltool on the DLL,
+# then point ORT_LIB_LOCATION at the directory with libonnxruntime.dll.a.
 ORT_LIB_LOCATION=/path/to/ort \
 ORT_PREFER_DYNAMIC_LINK=1 \
   cargo zigbuild --target x86_64-pc-windows-gnu
@@ -215,6 +220,21 @@ ORT_PREFER_DYNAMIC_LINK=1 \
 
 The Windows build produces a `libkittentts.a` containing genuine x86-64 COFF
 objects that link against `onnxruntime.dll` at runtime.
+
+Use the dedicated test script to automate the full cross-compilation setup
+(ORT download, import lib creation, optional espeak cross-compile, optional
+Wine test run):
+
+```sh
+# Basic Windows cross-build from Linux/macOS (no espeak):
+bash scripts/test-windows-cross.sh
+
+# With espeak (needs x86_64-w64-mingw32-gcc):
+bash scripts/test-windows-cross.sh --espeak
+
+# Full test — build + run under Wine:
+bash scripts/test-windows-cross.sh --espeak --wine
+```
 
 ### Any host → any target with `cargo cross`
 
@@ -257,6 +277,30 @@ ANDROID_NDK_HOME=/path/to/ndk \
 $env:ESPEAK_LIB_DIR = "$PWD\espeak-static\lib"
 powershell -ExecutionPolicy Bypass -File scripts\build-espeak-static.ps1
 ```
+
+### Native Windows build and test
+
+Use the PowerShell test script on a Windows machine or a GitHub Actions
+`windows-latest` runner:
+
+```powershell
+# Basic build + test (no espeak):
+powershell -ExecutionPolicy Bypass -File scripts\test-windows-native.ps1
+
+# Full test including espeak (auto-builds espeak-ng — needs git + cmake):
+powershell -ExecutionPolicy Bypass -File scripts\test-windows-native.ps1 -Espeak
+
+# Build only, skip running tests:
+powershell -ExecutionPolicy Bypass -File scripts\test-windows-native.ps1 -Espeak -BuildOnly
+```
+
+The `-Espeak` flag triggers the zero-config auto-build in `build.rs` which
+clones and compiles espeak-ng from source the first time.  Subsequent builds
+are instant (stamp file).
+
+> **Distribution note**: when shipping a Windows binary built with the
+> `espeak` feature, copy the `espeak-ng-data/` directory next to the `.exe`.
+> The script prints the exact path at the end of a successful run.
 
 ### iOS
 
@@ -315,8 +359,10 @@ Input text
 | `src/ffi.rs` | C FFI layer for iOS/Android |
 | `build.rs` | Native library detection and linking (Windows + cross-compilation aware) |
 | `tests/integration_tests.rs` | Integration & e2e test suite (40 tests, model-file based) |
-| `scripts/build-espeak-static.sh` | Build `libespeak-ng.a` from source (macOS/Linux/Android) |
-| `scripts/build-espeak-static.ps1` | Build `espeak-ng.lib`/`libespeak-ng.a` from source (Windows) |
+| `scripts/build-espeak-static.sh` | Build `libespeak-ng.a` from source (macOS/Linux/Android cross-compile) |
+| `scripts/build-espeak-static.ps1` | Build `espeak-ng.lib`/`libespeak-ng.a` from source (Windows MSVC/MinGW) |
+| `scripts/test-windows-cross.sh` | Cross-compile + test for Windows from Linux/macOS (downloads ORT, optional Wine run) |
+| `scripts/test-windows-native.ps1` | Build + test natively on Windows (auto-builds espeak-ng, MSVC/MinGW aware) |
 | `Cross.toml` | `cargo cross` configuration for Linux GNU/musl targets |
 | `.cargo/config.toml` | Cross-compilation linker settings (`cargo-zigbuild`, Windows, Linux x86_64) |
 | `ios/build_rust_ios.sh` | Full iOS XCFramework build (device + simulator) |
