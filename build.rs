@@ -123,6 +123,11 @@ fn main() {
         println!("cargo:rerun-if-env-changed={var}");
     }
 
+    // Track the manifest-local pre-built cache (same convention as neutts).
+    // When the file appears or is deleted Cargo re-runs this script.
+    println!("cargo:rerun-if-changed=espeak-static/lib/libespeak-ng.a");
+    println!("cargo:rerun-if-changed=espeak-static/lib/espeak-ng.lib");
+
     // ── Feature gate ──────────────────────────────────────────────────────────
     if std::env::var("CARGO_FEATURE_ESPEAK").is_err() {
         return;
@@ -369,15 +374,21 @@ fn link_static_from_dir(dir: &str, target_os: &str, target_env: &str) {
 /// Emit the C++ runtime link required when statically linking espeak-ng.
 ///
 /// * MSVC Windows:   no-op  — Rust's MSVC linker already includes the C++ runtime.
-/// * macOS:          `libc++` (LLVM runtime shipped with Xcode / libc++-dev).
+/// * macOS / iOS:    `libc++` (LLVM runtime shipped with Xcode / libc++-dev).
+/// * Android:        `c++_shared` (NDK r18+ ships LLVM libc++; libstdc++ removed).
 /// * Linux + MinGW:  `libstdc++` (GCC runtime).
 fn link_cxx(target_os: &str, target_env: &str) {
     if target_os == "windows" && target_env == "msvc" {
         // MSVC links the C++ runtime automatically.
     } else if target_os == "macos" || target_os == "ios" {
         println!("cargo:rustc-link-lib=dylib=c++");
+    } else if target_os == "android" {
+        // Android NDK r18+ uses LLVM libc++; libstdc++ was removed in r18.
+        // Link the shared variant to avoid bloating the APK with a second copy
+        // when other native libraries also pull in libc++_shared.
+        println!("cargo:rustc-link-lib=dylib=c++_shared");
     } else {
-        // Linux (gnu + musl), Android, MinGW, FreeBSD, …
+        // Linux (gnu + musl), MinGW, FreeBSD, …
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
 }
