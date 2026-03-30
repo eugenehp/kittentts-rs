@@ -31,15 +31,9 @@
 //!
 //! ## Mobile (iOS / Android)
 //!
-//! Phonemisation uses `libespeak-ng` directly (C library, no subprocess).
-//! The same [`generate`](KittenTTS::generate) API works on every platform.
-//! The only extra step on mobile is pointing espeak-ng at its bundled data:
-//!
-//! ```no_run
-//! // Call once at app startup, before any TTS call.
-//! // Bundle `espeak-ng-data/` with the app and pass its runtime path here.
-//! kittentts::phonemize::set_data_path(std::path::Path::new("/data/user/0/com.example/files/espeak-ng-data"));
-//! ```
+//! Phonemisation uses the pure-Rust `espeak-ng` crate with bundled data.
+//! The same [`generate`](KittenTTS::generate) API works on every platform
+//! with no extra setup — no C library, no system dependencies.
 //!
 //! You can also skip phonemisation entirely and pass pre-computed IPA:
 //!
@@ -53,15 +47,12 @@
 //! ## Build requirements
 //! | Platform           | Requirement                                          |
 //! |--------------------|------------------------------------------------------|
-//! | Alpine / Linux     | `apk add espeak-ng-dev` / `apt install libespeak-ng-dev` |
-//! | macOS (Homebrew)   | `brew install espeak-ng`                             |
-//! | Windows            | **Automatic** — requires `cmake` + `git` in PATH; build.rs clones and compiles espeak-ng. `espeak-ng-data` is wired up automatically. |
-//! | iOS / Android      | Cross-compiled `libespeak-ng.{a,so}`; set `ESPEAK_LIB_DIR` at build time |
+//! | All platforms      | None — the `espeak-ng` crate is pure Rust with bundled data |
 //!
 //! ## Pipeline (matches Python implementation)
 //! 1. **Text preprocessing** — numbers, currencies, abbreviations → spoken words.
 //! 2. **Chunking** — long texts split into ≤ 400-char sentence chunks.
-//! 3. **Phonemisation** — `libespeak-ng` converts text to IPA phonemes.
+//! 3. **Phonemisation** — pure-Rust `espeak-ng` converts text to IPA phonemes.
 //! 4. **Tokenisation** — IPA characters mapped to integer token IDs.
 //! 5. **ONNX inference** — model takes `(input_ids, style, speed)`, outputs audio.
 //! 6. **Tail trim** — last 5 000 samples removed (silence artifact).

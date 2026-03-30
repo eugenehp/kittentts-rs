@@ -1,6 +1,6 @@
 [package]
 name = "kittentts"
-version = "0.2.7"
+version = "0.3.0"
 edition = "2021"
 authors = ["Eugene Hauptmann"]
 description = "Rust port of KittenTTS — lightweight ONNX-based text-to-speech"
@@ -28,10 +28,11 @@ exclude = ["ios", "android"]
 #     Alpine :  apk add espeak-ng-dev
 #     Arch   :  sudo pacman -S espeak-ng
 #
-#   Mobile / static builds: set ESPEAK_LIB_DIR before building.
+#   Mobile / static builds: the pure-Rust `espeak-ng` crate is used,
+#   so no system library is needed.
 [features]
 default = []
-espeak = []
+espeak = ["dep:espeak-ng"]
 
 [lib]
 # rlib     — used by `cargo test`, `cargo build`, and downstream Rust crates.
@@ -60,6 +61,9 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 thiserror = "1"
+
+# Pure-Rust eSpeak NG (optional, behind `espeak` feature)
+espeak-ng = { version = "0.1", optional = true, features = ["bundled-data"] }
 
 # ZIP for NPZ parsing — pure-Rust deflate (the only compression numpy .npz uses)
 # on mobile; full feature set kept on desktop for completeness.
@@ -139,10 +143,6 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = [
 # Deflate-only zip: avoids bzip2-sys, lzma-sys, zstd-sys which need C cross-toolchain.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-[build-dependencies]
-# No external crates needed — the build script uses std::process::Command to
-# call pkg-config and brew directly, avoiding a compile-time dependency on the
-# pkg-config crate.
 
 [[example]]
 name = "basic"

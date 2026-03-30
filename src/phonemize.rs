@@ -1,10 +1,9 @@
-//! Phonemisation using the `libespeak-ng` C library.
+//! Phonemisation using the pure-Rust `espeak-ng` crate.
 //!
-//! The full implementation (FFI bindings, initialisation, `phonemize()`) is
-//! compiled only when the **`espeak`** Cargo feature is enabled.  Without it
-//! every public function is still present but returns an informative error,
-//! so downstream crates that only use the IPA-input APIs can compile and
-//! publish to crates.io without a system libespeak-ng.
+//! The full implementation is compiled only when the **`espeak`** Cargo feature
+//! is enabled.  Without it every public function is still present but returns
+//! an informative error, so downstream crates that only use the IPA-input APIs
+//! can compile and publish to crates.io without any espeak dependency.
 //!
 //! ## Enabling
 //!
@@ -15,18 +14,14 @@
 //!
 //! ## Build requirements (when `espeak` feature is on)
 //!
-//! | Platform             | Requirement                                    |
-//! |----------------------|------------------------------------------------|
-//! | Alpine / Linux       | `apk add espeak-ng-dev` / `apt install libespeak-ng-dev` |
-//! | macOS (Homebrew)     | `brew install espeak-ng`                       |
-//! | Windows              | **Automatic** — build.rs clones + compiles espeak-ng via cmake. Requires `cmake` and `git` in PATH. `espeak-ng-data` is wired up automatically for `cargo run`/`cargo test`. For distribution, ship `espeak-ng-data/` next to the binary. |
-//! | iOS / Android        | Cross-compiled `libespeak-ng.{a,so}`; set `ESPEAK_LIB_DIR` at build time and [`set_data_path`] at runtime |
+//! **None!** The `espeak-ng` crate is a pure-Rust port that bundles its own
+//! data files via the `bundled-data-en` feature.  No system library, no
+//! pkg-config, no cmake needed.
 //!
 //! ## Mobile setup (espeak feature)
-//! 1. Cross-compile espeak-ng for the target ABI (see the project README).
-//! 2. Bundle the `espeak-ng-data/` directory with the app.
-//! 3. Before the first call to [`phonemize`], call [`set_data_path`] with the
-//!    runtime path to that directory.
+//! The pure-Rust implementation works on all platforms out of the box.
+//! If you need to override the data directory (e.g. for additional languages),
+//! call [`set_data_path`] before the first [`phonemize`] call.
 
 use std::path::{Path, PathBuf};
 
@@ -37,208 +32,102 @@ use once_cell::sync::OnceCell;
 
 // ─── Runtime data-path (always compiled) ─────────────────────────────────────
 
-/// Optional runtime path to `espeak-ng-data/`.
+/// Optional runtime path to espeak-ng data.
 /// Set by [`set_data_path`] before the first [`phonemize`] call.
 static DATA_PATH: OnceCell<PathBuf> = OnceCell::new();
 
-/// Set the path to the `espeak-ng-data` directory.
+/// Set the path to the espeak-ng data directory.
 ///
-/// **Required on iOS and Android** when the `espeak` feature is enabled: bundle
-/// `espeak-ng-data/` with the app and call this with its runtime path before any
-/// call to [`phonemize`].
-///
-/// Optional on desktop — if not called the library searches its compiled-in
-/// system path (e.g. `/usr/lib/x86_64-linux-gnu/espeak-ng-data` on Ubuntu,
-/// `/usr/share/espeak-ng-data` on Alpine, or the Homebrew prefix on macOS).
-///
-/// Has no effect when the `espeak` feature is disabled (the path is stored but
-/// never used).
+/// With the pure-Rust `espeak-ng` crate and the `bundled-data-en` feature,
+/// this is **optional** — bundled data is extracted to a temp directory
+/// automatically.  Call this only if you need to override the data directory
+/// (e.g. for additional languages or custom dictionaries).
 ///
 /// Has no effect if called after [`phonemize`] has already initialised the
-/// library.
+/// engine.
 pub fn set_data_path(path: &Path) {
-    // Silently no-op if already set; the library is already (or about to be)
-    // initialised with whatever path was set first.
     let _ = DATA_PATH.set(path.to_path_buf());
 }
 
-// ─── espeak feature: full FFI implementation ──────────────────────────────────
+// ─── espeak feature: pure-Rust implementation ─────────────────────────────────
 
 #[cfg(feature = "espeak")]
 mod inner {
-    use std::ffi::{CStr, CString};
-    use std::os::raw::{c_char, c_int, c_void};
-    use std::sync::Mutex;
+    use std::path::PathBuf;
 
     use anyhow::{anyhow, Result};
     use once_cell::sync::OnceCell;
 
     use super::DATA_PATH;
 
-    // ── FFI bindings ──────────────────────────────────────────────────────────
-    // Linking is handled by build.rs (pkg-config on desktop, ESPEAK_LIB_DIR on
-    // mobile).  No #[link] attribute here so the same source compiles for every
-    // target without change.
+    /// Lazily-initialised data directory for the bundled espeak-ng data.
+    /// The bundled data files are extracted here once and reused.
+    static BUNDLED_DATA_DIR: OnceCell<PathBuf> = OnceCell::new();
 
-    extern "C" {
-        /// Set the directory that contains `espeak-ng-data/`.
-        /// Pass `NULL` to use the library's compiled-in default (works on desktop).
-        fn espeak_ng_InitializePath(path: *const c_char);
-
-        /// Initialise the phoneme tables.  Must be called after InitializePath.
-        /// Returns ENS_OK (0) on success.
-        fn espeak_ng_Initialize(context: *mut c_void) -> c_int;
-
-        /// Select the voice used for phonemisation.
-        /// Returns EE_OK (0) on success.
-        fn espeak_ng_SetVoiceByName(name: *const c_char) -> c_int;
-
-        /// Translate text to phonemes.
-        ///
-        /// `textptr` is an in/out pointer: on entry it points to the start of
-        /// the text; on return it has advanced past the translated clause, or
-        /// been set to `NULL` when the entire text has been consumed.
-        ///
-        /// Returns a pointer to an internal buffer holding the phonemes for the
-        /// current clause, or `NULL` for an empty clause.  Copy the string
-        /// before making any further espeak-ng calls (the buffer is overwritten).
-        fn espeak_TextToPhonemes(
-            textptr: *mut *const c_void,
-            textmode: c_int,
-            phonememode: c_int,
-        ) -> *const c_char;
-    }
-
-    /// `textmode` value: input is UTF-8.
-    const CHARS_UTF8: c_int = 1;
-
-    /// `phonememode` value: output IPA (bit 1 set).
-    const PHONEMES_IPA: c_int = 0x02;
-
-    // ── Global state ──────────────────────────────────────────────────────────
-
-    /// Serialises every call into the espeak-ng library.
-    /// espeak-ng uses global state and is not thread-safe.
-    pub(super) static LOCK: Mutex<()> = Mutex::new(());
-
-    /// Cached result of the one-time initialisation.
-    pub(super) static INIT: OnceCell<std::result::Result<(), String>> = OnceCell::new();
-
-    // ── Initialisation ────────────────────────────────────────────────────────
-
-    /// Called exactly once (inside LOCK) to initialise the espeak-ng library.
-    pub(super) fn do_init() -> std::result::Result<(), String> {
-        unsafe {
-            // ── Resolve the espeak-ng-data path ──────────────────────────────
-            //
-            // Priority order:
-            //
-            //   1. Explicitly set by the caller via `set_data_path()`.
-            //
-            //   2. Compile-time path baked in by build.rs when it auto-built
-            //      espeak-ng or found a non-system install (Windows).
-            //      Available via `option_env!("KITTENTTS_ESPEAK_DATA_DIR")`.
-            //      Works for `cargo run` / `cargo test` with no user setup.
-            //
-            //   3. A directory named `espeak-ng-data` next to the running
-            //      executable.  This is the recommended layout for distributed
-            //      binaries: ship `espeak-ng-data/` alongside the .exe.
-            //
-            //   4. NULL → espeak-ng searches its compiled-in system data path.
-            //      Correct for system package installs on Linux / macOS.
-
-            let resolved: Option<std::path::PathBuf> =
-                // 1. Explicit caller override.
-                DATA_PATH.get().cloned()
-                // 2. Compile-time path from build.rs (Windows auto-build or
-                //    custom ESPEAK_LIB_DIR with data found nearby).
-                .or_else(|| {
-                    option_env!("KITTENTTS_ESPEAK_DATA_DIR")
-                        .map(std::path::PathBuf::from)
-                        .filter(|p| p.is_dir())
-                })
-                // 3. Directory next to the current executable (distribution layout).
-                .or_else(|| {
-                    std::env::current_exe().ok()
-                        .and_then(|exe| exe.parent().map(|d| d.join("espeak-ng-data")))
-                        .filter(|p| p.is_dir())
-                });
-
-            let path_cstr: Option<CString> = resolved.map(|p| {
-                CString::new(p.to_string_lossy().as_bytes())
-                    .expect("espeak data path contains a null byte")
-            });
-            let path_ptr: *const c_char =
-                path_cstr.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-
-            espeak_ng_InitializePath(path_ptr);
-
-            // ENS_OK = 0
-            let status = espeak_ng_Initialize(std::ptr::null_mut());
-            if status != 0 {
-                return Err(format!(
-                    "espeak_ng_Initialize failed (status {:#010x})",
-                    status
-                ));
-            }
-
-            // Select en-us voice — the same one the model was trained on.
-            let voice = CString::new("en-us").unwrap();
-            let rc = espeak_ng_SetVoiceByName(voice.as_ptr());
-            if rc != 0 {
-                return Err(format!(
-                    "espeak_ng_SetVoiceByName(\"en-us\") failed (rc {})",
-                    rc
-                ));
-            }
+    /// Get or create the data directory with bundled espeak-ng data installed.
+    fn get_data_dir() -> Result<&'static PathBuf> {
+        // If the user explicitly set a data path, use that.
+        if let Some(user_dir) = DATA_PATH.get() {
+            // Return a static ref by storing it in BUNDLED_DATA_DIR too.
+            return Ok(BUNDLED_DATA_DIR.get_or_init(|| user_dir.clone()));
         }
-        Ok(())
+
+        BUNDLED_DATA_DIR.get_or_try_init(|| {
+            // Use a deterministic cache directory to avoid re-extracting every time.
+            let cache_dir = std::env::temp_dir().join("kittentts-espeak-ng-data");
+            std::fs::create_dir_all(&cache_dir)
+                .map_err(|e| anyhow!("Failed to create espeak-ng data dir: {}", e))?;
+
+            // Install all bundled language data files.
+            espeak_ng::install_bundled_data(&cache_dir)
+                .map_err(|e| anyhow!("Failed to install bundled espeak-ng data: {}", e))?;
+
+            Ok(cache_dir)
+        })
     }
 
-    // ── Public impl ───────────────────────────────────────────────────────────
+    fn create_engine() -> Result<espeak_ng::EspeakNg> {
+        let data_dir = get_data_dir()?;
+        espeak_ng::EspeakNg::with_data_dir("en", data_dir)
+            .map_err(|e| anyhow!("espeak-ng init failed: {}", e))
+    }
 
     pub(super) fn is_available() -> bool {
-        let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        INIT.get_or_init(do_init).is_ok()
+        create_engine().is_ok()
+    }
+
+    #[cfg(test)]
+    pub(super) fn create_engine_for_lang(lang: &str) -> Result<espeak_ng::EspeakNg> {
+        let data_dir = get_data_dir()?;
+        espeak_ng::EspeakNg::with_data_dir(lang, data_dir)
+            .map_err(|e| anyhow!("espeak-ng init for '{}' failed: {}", lang, e))
     }
 
     pub(super) fn run_phonemize(text: &str) -> Result<String> {
-        let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
-        INIT.get_or_init(do_init)
-            .as_ref()
-            .map_err(|e| anyhow!("espeak-ng: {}", e))?;
-
-        let text_c = CString::new(text)
-            .map_err(|_| anyhow!("phonemize: text contains a null byte"))?;
-
-        let mut current: *const c_void = text_c.as_ptr() as *const c_void;
-        let mut parts: Vec<String> = Vec::new();
-
-        unsafe {
-            while !current.is_null() {
-                let phonemes_ptr =
-                    espeak_TextToPhonemes(&mut current, CHARS_UTF8, PHONEMES_IPA);
-
-                if phonemes_ptr.is_null() {
-                    // Empty clause (e.g. leading whitespace) — keep looping.
-                    continue;
-                }
-
-                // Copy out before the next call overwrites the internal buffer.
-                let chunk = CStr::from_ptr(phonemes_ptr)
-                    .to_str()
-                    .map_err(|_| anyhow!("espeak-ng returned non-UTF-8 phonemes"))?
-                    .trim()
-                    .to_owned();
-
-                if !chunk.is_empty() {
-                    parts.push(chunk);
-                }
-            }
+        if text.is_empty() {
+            return Ok(String::new());
         }
 
-        Ok(parts.join(" "))
+        let engine = create_engine()?;
+        let ipa = engine
+            .text_to_phonemes(text)
+            .map_err(|e| anyhow!("espeak-ng phonemise failed: {}", e))?;
+
+        Ok(ipa.trim().to_owned())
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_phonemize_lang(lang: &str, text: &str) -> Result<String> {
+        if text.is_empty() {
+            return Ok(String::new());
+        }
+
+        let engine = create_engine_for_lang(lang)?;
+        let ipa = engine
+            .text_to_phonemes(text)
+            .map_err(|e| anyhow!("espeak-ng phonemise ({}) failed: {}", lang, e))?;
+
+        Ok(ipa.trim().to_owned())
     }
 }
 
@@ -247,9 +136,6 @@ mod inner {
 /// Returns `true` if espeak-ng is available and initialises successfully.
 ///
 /// Always returns `false` when the `espeak` Cargo feature is disabled.
-///
-/// On mobile this will return `false` until [`set_data_path`] has been called
-/// with a valid path.
 pub fn is_espeak_available() -> bool {
     #[cfg(feature = "espeak")]
     {
@@ -261,18 +147,16 @@ pub fn is_espeak_available() -> bool {
     }
 }
 
-/// Convert `text` to IPA phonemes using the espeak-ng `en-us` voice.
+/// Convert `text` to IPA phonemes using the espeak-ng `en` voice.
 ///
 /// Produces the same output as:
 /// ```text
-/// espeak-ng --ipa -q -v en-us --stdin
+/// espeak-ng --ipa -q -v en --stdin
 /// ```
 ///
 /// **Requires the `espeak` Cargo feature.**  Returns an error when the feature
 /// is disabled — use [`KittenTtsOnnx::generate_from_ipa`] as an alternative
 /// that bypasses phonemisation entirely.
-///
-/// On **mobile** you must call [`set_data_path`] before the first call.
 pub fn phonemize(text: &str) -> Result<String> {
     #[cfg(feature = "espeak")]
     {
@@ -299,7 +183,7 @@ mod tests {
     fn test_availability() {
         assert!(
             is_espeak_available(),
-            "espeak-ng library initialised but is_espeak_available() returned false"
+            "espeak-ng should be available with bundled data"
         );
     }
 
@@ -324,5 +208,174 @@ mod tests {
     fn test_phonemize_empty() {
         let ipa = phonemize("").expect("phonemize failed");
         assert!(ipa.trim().is_empty(), "expected empty IPA for empty input, got: {ipa}");
+    }
+
+    #[test]
+    fn test_all_bundled_languages() {
+        let sample_texts: &[(&str, &str)] = &[
+            ("af", "Hallo wêreld"),
+            ("am", "ሰላም ዓለም"),
+            ("an", "Hola mundo"),
+            ("ar", "مرحبا بالعالم"),
+            ("as", "নমস্কাৰ পৃথিৱী"),
+            ("az", "Salam dünya"),
+            ("ba", "Сәләм донъя"),
+            ("be", "Прывітанне свет"),
+            ("bg", "Здравей свят"),
+            ("bn", "হ্যালো বিশ্ব"),
+            ("bpy", "হ্যালো বিশ্ব"),
+            ("bs", "Zdravo svijete"),
+            ("ca", "Hola món"),
+            ("chr", "ᎣᏏᏲ ᎡᎶᎯ"),
+            ("cmn", "你好世界"),
+            ("cs", "Ahoj světe"),
+            ("cv", "Салам тĕнче"),
+            ("cy", "Helo byd"),
+            ("da", "Hej verden"),
+            ("de", "Hallo Welt"),
+            ("el", "Γεια σου κόσμε"),
+            ("en", "Hello world"),
+            ("eo", "Saluton mondo"),
+            ("es", "Hola mundo"),
+            ("et", "Tere maailm"),
+            ("eu", "Kaixo mundua"),
+            ("fa", "سلام دنیا"),
+            ("fi", "Hei maailma"),
+            ("fr", "Bonjour le monde"),
+            ("ga", "Dia duit a dhomhan"),
+            ("gd", "Halò a shaoghail"),
+            ("gn", "Mba eichaporã"),
+            ("grc", "Χαῖρε κόσμε"),
+            ("gu", "હેલો વિશ્વ"),
+            ("hak", "你好世界"),
+            ("haw", "Aloha honua"),
+            ("he", "שלום עולם"),
+            ("hi", "नमस्ते दुनिया"),
+            ("hr", "Pozdrav svijete"),
+            ("ht", "Bonjou mond"),
+            ("hu", "Helló világ"),
+            ("hy", "Բարեdelays աշdelays"),
+            ("ia", "Salute mundo"),
+            ("id", "Halo dunia"),
+            ("io", "Saluto mondo"),
+            ("is", "Halló heimur"),
+            ("it", "Ciao mondo"),
+            ("ja", "こんにちは世界"),
+            ("jbo", "coi rodo"),
+            ("ka", "გამარჯობა მსოფლიო"),
+            ("kk", "Сәлем әлем"),
+            ("kl", "Aluu nunarsuaq"),
+            ("kn", "ಹಲೋ ಪ್ರಪಂಚ"),
+            ("ko", "안녕하세요 세계"),
+            ("kok", "नमस्कार जग"),
+            ("ku", "Silav cîhan"),
+            ("ky", "Салам дүйнө"),
+            ("la", "Salve munde"),
+            ("lb", "Moien Welt"),
+            ("lfn", "Bon dia mundo"),
+            ("lt", "Sveikas pasauli"),
+            ("lv", "Sveika pasaule"),
+            ("mi", "Kia ora te ao"),
+            ("mk", "Здраво свету"),
+            ("ml", "ഹലോ ലോകം"),
+            ("mr", "नमस्कार जग"),
+            ("ms", "Helo dunia"),
+            ("mt", "Bongu dinja"),
+            ("mto", "Hola mundo"),
+            ("my", "မင်္ဂလာပါ ကမ္ဘာ"),
+            ("nci", "Niltze cemanahuac"),
+            ("ne", "नमस्ते संसार"),
+            ("nl", "Hallo wereld"),
+            ("no", "Hei verden"),
+            ("nog", "Салам дуныя"),
+            ("om", "Akkam addunyaa"),
+            ("or", "ନମସ୍କାର ବିଶ୍ୱ"),
+            ("pa", "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਦੁਨੀਆ"),
+            ("pap", "Bon dia mundo"),
+            ("piqd", "nuqneH"),
+            ("pl", "Witaj świecie"),
+            ("pt", "Olá mundo"),
+            ("py", "Hello world"),
+            ("qdb", "Hello world"),
+            ("qu", "Napaykullayki llaqta"),
+            ("quc", "Saqarik uwachulew"),
+            ("qya", "Aiya Arda"),
+            ("ro", "Salut lume"),
+            ("ru", "Привет мир"),
+            ("sd", "هيلو دنيا"),
+            ("shn", "မႂ်ႇသုင်ႇ လူၵ်ႈ"),
+            ("si", "හෙලෝ ලෝකය"),
+            ("sjn", "Mae govannen"),
+            ("sk", "Ahoj svet"),
+            ("sl", "Pozdravljen svet"),
+            ("smj", "Buorre beaivi"),
+            ("sq", "Përshëndetje botë"),
+            ("sr", "Здраво свете"),
+            ("sv", "Hej världen"),
+            ("sw", "Habari dunia"),
+            ("ta", "வணக்கம் உலகம்"),
+            ("te", "హలో ప్రపంచం"),
+            ("th", "สวัสดีชาวโลก"),
+            ("ti", "ሰላም ዓለም"),
+            ("tk", "Salam dünýä"),
+            ("tn", "Dumela lefatshe"),
+            ("tr", "Merhaba dünya"),
+            ("tt", "Сәлам дөнья"),
+            ("ug", "ياخشىمۇسىز دۇنيا"),
+            ("uk", "Привіт світ"),
+            ("ur", "ہیلو دنیا"),
+            ("uz", "Salom dunyo"),
+            ("vi", "Xin chào thế giới"),
+            ("yue", "你好世界"),
+        ];
+
+        // Languages whose phoneme tables are missing in espeak-ng 0.1.0.
+        // These are aliases in the C library (e.g. bs→hr) that the pure-Rust
+        // port hasn't wired up yet.
+        let known_missing: &[&str] = &["bs", "io", "lfn", "pap"];
+
+        let mut passed = 0;
+        let mut empty = Vec::new();
+        let mut failed = Vec::new();
+        let mut skipped = Vec::new();
+
+        for &(lang, text) in sample_texts {
+            match inner::run_phonemize_lang(lang, text) {
+                Ok(ipa) if ipa.is_empty() => {
+                    println!("  {lang:>5}: {text:30} → (empty)");
+                    empty.push(lang);
+                    passed += 1;
+                }
+                Ok(ipa) => {
+                    println!("  {lang:>5}: {text:30} → {ipa}");
+                    passed += 1;
+                }
+                Err(e) if known_missing.contains(&lang) => {
+                    println!("  {lang:>5}: SKIPPED (known missing) — {e}");
+                    skipped.push(lang);
+                }
+                Err(e) => {
+                    eprintln!("  {lang:>5}: FAILED — {e}");
+                    failed.push((lang, format!("{e}")));
+                }
+            }
+        }
+
+        let total = sample_texts.len();
+        println!("\n{passed}/{total} languages succeeded, {} skipped (known missing)",
+            skipped.len());
+        if !empty.is_empty() {
+            println!("{} languages returned empty IPA: {:?}", empty.len(), empty);
+        }
+        if !failed.is_empty() {
+            println!("Unexpected failures:");
+            for (lang, err) in &failed {
+                println!("  {lang}: {err}");
+            }
+            panic!(
+                "{} out of {total} languages had unexpected failures",
+                failed.len(),
+            );
+        }
     }
 }

@@ -5,7 +5,6 @@
 //!   cargo run --example basic -- --voice Jasper --text "Hello from Rust!"
 //!
 //! Requirements:
-//!   - espeak-ng on $PATH (apk add espeak-ng / apt install espeak-ng)
 //!   - Internet access for the first run (model is cached afterwards)
 
 use std::path::Path;
@@ -40,12 +39,7 @@ fn main() -> anyhow::Result<()> {
 
     // ── Check espeak-ng ──────────────────────────────────────────────────────
     if !kittentts::phonemize::is_espeak_available() {
-        eprintln!(
-            "WARNING: espeak-ng not found on $PATH.\n\
-             Install with:  apk add espeak-ng  (Alpine)\n\
-             Or:            apt install espeak-ng  (Debian/Ubuntu)\n\
-             Or:            brew install espeak-ng  (macOS)"
-        );
+        eprintln!("WARNING: espeak-ng phonemiser not available.");
     }
 
     // ── Download / load model ────────────────────────────────────────────────

@@ -12,44 +12,17 @@ A Rust port of [KittenTTS](https://github.com/KittenML/KittenTTS) — an ultra-l
 
 - **ONNX Runtime inference** — uses [`ort`](https://github.com/pykeio/ort) (ORT 2.0 bindings) for fast CPU inference
 - **Full text preprocessing** — numbers, currencies, abbreviations, ordinals, units, etc. → spoken words
-- **espeak-ng phonemisation** — IPA output via the `libespeak-ng` C library (FFI, not subprocess)
+- **Pure-Rust phonemisation** — IPA output via the [`espeak-ng`](https://crates.io/crates/espeak-ng) crate (no C library, no system dependencies)
+- **114 bundled languages** — English and 113 other languages ship as embedded data (no runtime downloads)
 - **Same ONNX models** — works with all KittenTTS HuggingFace checkpoints
 - **Automatic chunking** — long texts split into ≤ 400-char sentence chunks, then concatenated
-- **Cross-platform** — macOS, Linux, Windows (MSVC + MinGW), iOS, Android
-- **Cross-compilation** — `cargo cross` supported out-of-the-box for Linux GNU/musl, Android, and more
+- **Cross-platform** — macOS, Linux, Windows, iOS, Android — all from pure Rust
+- **Zero native dependencies** — no `cmake`, no `pkg-config`, no `brew install`, no `apt install`
 
 ## Prerequisites
 
-The `espeak` Cargo feature requires **`libespeak-ng`** to be installed (the
-shared or static library, **not** just the command-line tool):
-
-```sh
-# macOS
-brew install espeak-ng
-
-# Debian / Ubuntu (installs libespeak-ng.so + headers)
-sudo apt install libespeak-ng-dev
-
-# Alpine Linux (installs libespeak-ng.a for static linking)
-apk add espeak-ng-dev espeak-ng-static
-
-# Fedora / RHEL
-sudo dnf install espeak-ng-devel
-
-# Arch Linux
-sudo pacman -S espeak-ng
-
-# Windows — zero-config auto-build (requires git + cmake in PATH):
-#   cargo build --features espeak
-#   ↑ clones + compiles espeak-ng from GitHub automatically on first build.
-#
-# Or pre-install manually (choose one):
-#   Option A: official installer → https://github.com/espeak-ng/espeak-ng/releases
-#   Option B: vcpkg
-vcpkg install espeak-ng:x64-windows-static
-#   Option C: MSYS2/MinGW64
-pacman -S mingw-w64-x86_64-espeak-ng
-```
+**None!** The `espeak` feature uses the pure-Rust [`espeak-ng`](https://crates.io/crates/espeak-ng) crate
+with bundled data for all 114 supported languages. No system library installation is required on any platform.
 
 The `espeak` feature is **opt-in**. Without it every API that accepts raw IPA
 input still works; only text-to-IPA conversion (and therefore the high-level
@@ -60,13 +33,13 @@ input still works; only text-to-IPA conversion (and therefore the high-level
 ```toml
 # Cargo.toml
 
-# Without espeak-ng (IPA input only — no native library needed)
+# Without espeak (IPA input only)
 [dependencies]
-kittentts = "0.2.5"
+kittentts = "0.3.0"
 
-# With espeak-ng (full text input)
+# With espeak (full text input — pure Rust, no system deps)
 [dependencies]
-kittentts = { version = "0.2.5", features = ["espeak"] }
+kittentts = { version = "0.3.0", features = ["espeak"] }
 ```
 
 Or add it with cargo:
@@ -80,7 +53,7 @@ cargo add kittentts --features espeak
 
 ```toml
 [dependencies]
-kittentts = { git = "https://github.com/eugenehp/kittentts-rs", tag = "v0.2.5" }
+kittentts = { git = "https://github.com/eugenehp/kittentts-rs", tag = "v0.3.0" }
 kittentts = { git = "https://github.com/eugenehp/kittentts-rs", branch = "main" }
 ```
 
@@ -129,6 +102,15 @@ cargo run --example basic --features espeak -- --voice Luna --text "Hello world"
 
 `Bella`, `Jasper`, `Luna`, `Bruno`, `Rosie`, `Hugo`, `Kiki`, `Leo`
 
+## Bundled Languages (114)
+
+The `espeak` feature bundles phoneme data for all 114 espeak-ng languages:
+
+`af`, `am`, `an`, `ar`, `as`, `az`, `ba`, `be`, `bg`, `bn`, `bpy`, `bs`, `ca`, `chr`, `cmn`, `cs`, `cv`, `cy`, `da`, `de`, `el`, `en`, `eo`, `es`, `et`, `eu`, `fa`, `fi`, `fr`, `ga`, `gd`, `gn`, `grc`, `gu`, `hak`, `haw`, `he`, `hi`, `hr`, `ht`, `hu`, `hy`, `ia`, `id`, `io`, `is`, `it`, `ja`, `jbo`, `ka`, `kk`, `kl`, `kn`, `ko`, `kok`, `ku`, `ky`, `la`, `lb`, `lfn`, `lt`, `lv`, `mi`, `mk`, `ml`, `mr`, `ms`, `mt`, `mto`, `my`, `nci`, `ne`, `nl`, `no`, `nog`, `om`, `or`, `pa`, `pap`, `piqd`, `pl`, `pt`, `py`, `qdb`, `qu`, `quc`, `qya`, `ro`, `ru`, `sd`, `shn`, `si`, `sjn`, `sk`, `sl`, `smj`, `sq`, `sr`, `sv`, `sw`, `ta`, `te`, `th`, `ti`, `tk`, `tn`, `tr`, `tt`, `ug`, `uk`, `ur`, `uz`, `vi`, `yue`
+
+> **Note**: 4 languages (`bs`, `io`, `lfn`, `pap`) have missing phoneme tables in `espeak-ng` 0.1.0.
+> 17 languages with non-Latin scripts may return empty IPA for some inputs (upstream limitation).
+
 ## API
 
 ```rust
@@ -149,168 +131,42 @@ let audio: Vec<f32> = tts.generate("Hello!", "Jasper", 1.0, true)?;
 // Generate and save to WAV
 tts.generate_to_file("Hello!", Path::new("out.wav"), "Jasper", 1.0, true)?;
 
+// Generate from pre-computed IPA (no espeak feature needed)
+let audio = tts.generate_from_ipa("həloʊ", "Jasper", 1.0, 5)?;
+
 // Available voices
 println!("{:?}", tts.available_voices);
 ```
 
-## Build Configuration
+## Cross-Platform Build
 
-### Environment Variables
-
-| Variable | Description |
-|---|---|
-| `ESPEAK_LIB_DIR` | Directory containing `libespeak-ng.a` or `espeak-ng.lib`. Takes priority over all auto-detection. Required for iOS/Android. |
-| `ESPEAK_SYSROOT` | Root of a cross-compilation sysroot. All Unix candidate lib paths are prefixed with this value. |
-| `ESPEAK_BUILD_SCRIPT` | Path to a script that builds `libespeak-ng` from source. Invoked automatically when `ESPEAK_LIB_DIR` is set but the archive is missing. |
-| `ESPEAK_TAG` | espeak-ng release tag used by the build scripts (default: `1.52.0`). |
-| `VCPKG_ROOT` | vcpkg installation root; enables vcpkg-installed espeak-ng on Windows. |
-| `MSYS2_PATH` | MSYS2 installation root on Windows (default: `C:\msys64`). |
-| `ANDROID_NDK_HOME` | Android NDK root for Android cross-compilation (also `ANDROID_NDK_ROOT` / `NDK_HOME`). |
-| `PKG_CONFIG_ALLOW_CROSS` | Set to `1` to allow `pkg-config` to run during cross-compilation. |
-
-### Auto-build Script
-
-Point `ESPEAK_BUILD_SCRIPT` at one of the provided scripts to have the build
-system compile `libespeak-ng` automatically when the archive is missing:
+Since phonemisation is now pure Rust, cross-compilation is straightforward:
 
 ```sh
-# macOS / Linux — any target
-ESPEAK_LIB_DIR=$PWD/espeak-static/lib \
-ESPEAK_BUILD_SCRIPT=$PWD/scripts/build-espeak-static.sh \
-  cargo build --features espeak
+# iOS
+rustup target add aarch64-apple-ios
+cargo build --target aarch64-apple-ios --features espeak
 
-# Windows
-$env:ESPEAK_LIB_DIR = "$PWD\espeak-static\lib"
-$env:ESPEAK_BUILD_SCRIPT = "$PWD\scripts\build-espeak-static.ps1"
-cargo build --features espeak
-```
+# Android
+rustup target add aarch64-linux-android
+cargo build --target aarch64-linux-android --features espeak
 
-## Cross-Compilation
-
-### Linux → Linux aarch64 (Debian/Ubuntu multiarch — simplest)
-
-```sh
-sudo dpkg --add-architecture arm64
-sudo apt update
-sudo apt install gcc-aarch64-linux-gnu libespeak-ng-dev:arm64
+# Linux aarch64
 rustup target add aarch64-unknown-linux-gnu
 cargo build --target aarch64-unknown-linux-gnu --features espeak
+
+# Windows (from any host)
+rustup target add x86_64-pc-windows-gnu
+cargo build --target x86_64-pc-windows-gnu --features espeak
 ```
 
-### Any host → Linux x86_64 or Windows x64 with `cargo-zigbuild`
-
-[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) uses the Zig
-compiler as a drop-in cross-linker — no Docker, no SDK, no sysroot required
-for the default (no-espeak) feature set.
-
-```sh
-cargo install cargo-zigbuild
-rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
-
-# Linux x86_64 — ORT static lib downloaded automatically
-cargo zigbuild --target x86_64-unknown-linux-gnu
-
-# Windows x64 — ORT import library created automatically by the test script,
-# or manually: download the ORT Windows ZIP, run llvm-dlltool on the DLL,
-# then point ORT_LIB_LOCATION at the directory with libonnxruntime.dll.a.
-ORT_LIB_LOCATION=/path/to/ort \
-ORT_PREFER_DYNAMIC_LINK=1 \
-  cargo zigbuild --target x86_64-pc-windows-gnu
-```
-
-The Windows build produces a `libkittentts.a` containing genuine x86-64 COFF
-objects that link against `onnxruntime.dll` at runtime.
-
-Use the dedicated test script to automate the full cross-compilation setup
-(ORT download, import lib creation, optional espeak cross-compile, optional
-Wine test run):
-
-```sh
-# Basic Windows cross-build from Linux/macOS (no espeak):
-bash scripts/test-windows-cross.sh
-
-# With espeak (needs x86_64-w64-mingw32-gcc):
-bash scripts/test-windows-cross.sh --espeak
-
-# Full test — build + run under Wine:
-bash scripts/test-windows-cross.sh --espeak --wine
-```
-
-### Any host → any target with `cargo cross`
-
-```sh
-cargo install cross --git https://github.com/cross-rs/cross
-
-# cross reads Cross.toml and installs libespeak-ng-dev inside the container
-cross build --target aarch64-unknown-linux-gnu  --features espeak
-cross build --target armv7-unknown-linux-gnueabihf --features espeak
-cross build --target x86_64-unknown-linux-musl  --features espeak
-cross build --target riscv64gc-unknown-linux-gnu --features espeak
-```
-
-`Cross.toml` in the repository root configures `pre-build` commands for every
-supported GNU and musl target.  No manual setup beyond installing `cross` is
-required.
-
-### Custom sysroot
-
-```sh
-ESPEAK_SYSROOT=/path/to/target-sysroot \
-  cargo build --target aarch64-unknown-linux-gnu --features espeak
-```
-
-### Build espeak-ng from source for a specific target
-
-```sh
-# Linux → aarch64 (requires: apt install gcc-aarch64-linux-gnu)
-ESPEAK_LIB_DIR=$PWD/espeak-static/aarch64/lib \
-ESPEAK_TARGET=aarch64-unknown-linux-gnu \
-  bash scripts/build-espeak-static.sh
-
-# Linux → Android arm64 (requires: ANDROID_NDK_HOME set)
-ESPEAK_LIB_DIR=$PWD/espeak-static/android/lib \
-ESPEAK_TARGET=aarch64-linux-android \
-ANDROID_NDK_HOME=/path/to/ndk \
-  bash scripts/build-espeak-static.sh
-
-# Windows (MSYS2 or MSVC)
-$env:ESPEAK_LIB_DIR = "$PWD\espeak-static\lib"
-powershell -ExecutionPolicy Bypass -File scripts\build-espeak-static.ps1
-```
-
-### Native Windows build and test
-
-Use the PowerShell test script on a Windows machine or a GitHub Actions
-`windows-latest` runner:
-
-```powershell
-# Basic build + test (no espeak):
-powershell -ExecutionPolicy Bypass -File scripts\test-windows-native.ps1
-
-# Full test including espeak (auto-builds espeak-ng — needs git + cmake):
-powershell -ExecutionPolicy Bypass -File scripts\test-windows-native.ps1 -Espeak
-
-# Build only, skip running tests:
-powershell -ExecutionPolicy Bypass -File scripts\test-windows-native.ps1 -Espeak -BuildOnly
-```
-
-The `-Espeak` flag triggers the zero-config auto-build in `build.rs` which
-clones and compiles espeak-ng from source the first time.  Subsequent builds
-are instant (stamp file).
-
-> **Distribution note**: when shipping a Windows binary built with the
-> `espeak` feature, copy the `espeak-ng-data/` directory next to the `.exe`.
-> The script prints the exact path at the end of a successful run.
+No `ESPEAK_LIB_DIR`, no sysroot, no cross-compiled C library needed.
 
 ### iOS
 
 ```sh
 bash ios/build_rust_ios.sh
 ```
-
-Builds espeak-ng for both device (arm64) and Simulator (arm64-sim), compiles
-kittentts-rs for each slice, and packages everything into
-`ios/KittenTTS.xcframework`.
 
 ### Android
 
@@ -319,9 +175,13 @@ export ANDROID_NDK_HOME=/path/to/ndk
 bash android/build_rust_android.sh
 ```
 
-Builds espeak-ng as a shared library, compiles the Rust static lib and JNI
-bridge, and copies all `.so` files into
-`android/KittenTTSApp/app/src/main/jniLibs/arm64-v8a/`.
+### With `cargo cross`
+
+```sh
+cargo install cross --git https://github.com/cross-rs/cross
+cross build --target aarch64-unknown-linux-gnu --features espeak
+cross build --target x86_64-unknown-linux-musl --features espeak
+```
 
 ## Architecture
 
@@ -332,16 +192,16 @@ Input text
        • contractions, units, scientific notation, fractions, …
     ↓  chunk_text()  (model.rs)
        • split into ≤ 400-char sentence chunks
-    ↓  libespeak-ng FFI  (phonemize.rs)
-       • text → IPA phoneme string (en-us, with stress)
-       • requires `espeak` feature + libespeak-ng linked at build time
+    ↓  espeak-ng (pure Rust)  (phonemize.rs)
+       • text → IPA phoneme string (en, with stress)
+       • requires `espeak` feature
     ↓  ipa_to_ids()  (tokenize.rs)
        • IPA chars → integer token IDs  (fixed vocab, same as Python)
        • prepend/append pad token 0
     ↓  ONNX Runtime inference  (model.rs)
        • inputs:  input_ids [1, T], style [1, D], speed [1]
        • output:  audio waveform [samples]
-    ↓  tail-trim (–5 000 samples) + chunk concatenation
+    ↓  tail-trim (–2 000 samples) + chunk concatenation
     ↓  Vec<f32> @ 24 kHz  or  WAV file
 ```
 
@@ -351,31 +211,25 @@ Input text
 |---|---|
 | `src/lib.rs` | Public API & re-exports |
 | `src/preprocess.rs` | Text preprocessing pipeline |
-| `src/phonemize.rs` | libespeak-ng FFI bindings and initialisation |
+| `src/phonemize.rs` | Pure-Rust espeak-ng phonemisation (bundled data, no C FFI) |
 | `src/tokenize.rs` | IPA character → token ID |
 | `src/npz.rs` | Hand-written NPY/NPZ loader |
 | `src/model.rs` | ONNX inference, chunking, WAV output |
 | `src/download.rs` | HuggingFace Hub model download |
 | `src/ffi.rs` | C FFI layer for iOS/Android |
-| `build.rs` | Native library detection and linking (Windows + cross-compilation aware) |
+| `build.rs` | Build script (minimal — no native library linking needed) |
 | `tests/integration_tests.rs` | Integration & e2e test suite (40 tests, model-file based) |
-| `scripts/build-espeak-static.sh` | Build `libespeak-ng.a` from source (macOS/Linux/Android cross-compile) |
-| `scripts/build-espeak-static.ps1` | Build `espeak-ng.lib`/`libespeak-ng.a` from source (Windows MSVC/MinGW) |
-| `scripts/test-windows-cross.sh` | Cross-compile + test for Windows from Linux/macOS (downloads ORT, optional Wine run) |
-| `scripts/test-windows-native.ps1` | Build + test natively on Windows (auto-builds espeak-ng, MSVC/MinGW aware) |
-| `Cross.toml` | `cargo cross` configuration for Linux GNU/musl targets |
-| `.cargo/config.toml` | Cross-compilation linker settings (`cargo-zigbuild`, Windows, Linux x86_64) |
 | `ios/build_rust_ios.sh` | Full iOS XCFramework build (device + simulator) |
-| `android/build_rust_android.sh` | Full Android arm64 build (JNI + espeak-ng) |
+| `android/build_rust_android.sh` | Full Android arm64 build (JNI bridge) |
 | `examples/basic.rs` | CLI example |
 
 ## Running Tests
 
 ```sh
-# All unit tests (no native library required — 20 tests)
+# All unit tests (no espeak — 20 tests)
 cargo test
 
-# All unit + espeak-ng phonemisation tests (requires libespeak-ng — 28 tests)
+# All unit + phonemisation tests (29 tests, including 114-language coverage)
 cargo test --features espeak
 
 # Integration and e2e tests using bundled model files (32 tests)
@@ -384,12 +238,11 @@ cargo test --test integration_tests
 # Integration + espeak + full inference e2e tests (40 tests)
 cargo test --test integration_tests --features espeak
 
+# Full test suite (72 tests)
+cargo test --features espeak
+
 # Point at a custom model directory
 KITTENTTS_MODEL_DIR=/path/to/models cargo test --test integration_tests
-
-# Check that all code compiles for the host target
-cargo check
-cargo check --features espeak
 ```
 
 ### Test counts at a glance
@@ -397,10 +250,23 @@ cargo check --features espeak
 | Suite | `--features espeak` | Tests |
 |---|:---:|---|
 | Unit tests (`src/**`) | no | 20 |
-| Unit tests (`src/**`) | yes | 28 |
+| Unit tests (`src/**`) | yes | 29 |
 | Integration tests | no | 32 |
 | Integration tests | yes | 40 |
-| Doc-tests | — | 4 |
+| Doc-tests | — | 3 |
+| **Total** | **yes** | **72** |
+
+## Migration from C `libespeak-ng`
+
+This crate previously used C FFI bindings to `libespeak-ng` with a 1200-line
+`build.rs` for native library detection and cross-compilation. It now uses the
+pure-Rust [`espeak-ng`](https://crates.io/crates/espeak-ng) crate instead:
+
+- **No system library required** — `brew install espeak-ng` / `apt install libespeak-ng-dev` no longer needed
+- **No C compiler needed** — no `cmake`, no `gcc`, no build scripts
+- **No unsafe code** in phonemisation — the entire FFI layer was removed
+- **build.rs reduced from 1200 lines to 8** — no pkg-config, no platform path walk, no Windows auto-build
+- **Cross-compilation just works** — no `ESPEAK_LIB_DIR`, no `ESPEAK_SYSROOT`, no NDK toolchain setup
 
 ## Citation
 
