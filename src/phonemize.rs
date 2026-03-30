@@ -211,6 +211,48 @@ mod tests {
     }
 
     #[test]
+    fn test_numbers_produce_ipa() {
+        let ipa = phonemize("123").expect("phonemize numbers failed");
+        assert!(!ipa.is_empty(), "numbers should produce IPA");
+    }
+
+    #[test]
+    fn test_long_text() {
+        let long = "The quick brown fox jumps over the lazy dog. ".repeat(20);
+        let ipa = phonemize(&long).expect("phonemize long text failed");
+        assert!(!ipa.is_empty(), "long text should produce IPA");
+    }
+
+    #[test]
+    fn test_punctuation_only() {
+        let ipa = phonemize("...").expect("phonemize punctuation failed");
+        let _ = ipa; // may be empty, should not error
+    }
+
+    #[test]
+    fn test_unicode_input() {
+        let ipa = phonemize("café résumé naïve").expect("phonemize unicode failed");
+        assert!(!ipa.is_empty(), "accented text should produce IPA");
+    }
+
+    #[test]
+    fn test_concurrent_phonemize() {
+        let handles: Vec<_> = (0..4)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let text = format!("Thread number {i} says hello");
+                    phonemize(&text).expect("concurrent phonemize failed")
+                })
+            })
+            .collect();
+
+        for h in handles {
+            let ipa = h.join().expect("thread panicked");
+            assert!(!ipa.is_empty(), "concurrent call should produce IPA");
+        }
+    }
+
+    #[test]
     fn test_all_bundled_languages() {
         let sample_texts: &[(&str, &str)] = &[
             ("af", "Hallo wêreld"),
