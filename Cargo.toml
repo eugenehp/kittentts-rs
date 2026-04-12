@@ -31,8 +31,11 @@ exclude = ["ios", "android"]
 #   Mobile / static builds: the pure-Rust `espeak-ng` crate is used,
 #   so no system library is needed.
 [features]
-default = []
+default = ["espeak", "mp3", "opus", "flac"]
 espeak = ["dep:espeak-ng"]
+mp3 = ["mp3lame-encoder"]
+opus = ["audiopus", "audiopus_sys", "ogg"]
+flac = ["flacenc"]
 
 [lib]
 # rlib     — used by `cargo test`, `cargo build`, and downstream Rust crates.
@@ -103,6 +106,21 @@ espeak-ng = { version = "0.1", optional = true, features = ["bundled-data"] }
 # We disable the default native-tls feature and use the ureq backend instead
 # (ureq v3 uses rustls by default — no OpenSSL needed, cross-compilation friendly).
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
+
+# Async runtime and web server (for kittentts-server binary)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio-stream = "0.1"
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+base64 = "0.22"
+
+# Audio encoding (optional, feature-gated)
+mp3lame-encoder = { version = "0.2", optional = true }
+audiopus = { version = "0.2", optional = true }
+audiopus_sys = { version = "0.1", optional = true, features = ["static"] }
+ogg = { version = "0.5", optional = true }
+flacenc = { version = "0.5", optional = true }
 ort = { version = "=2.0.0-rc.11", default-features = false, features = [
     "std",
     "pkg-config",        # try system libonnxruntime first (graceful no-op if absent)
@@ -143,8 +161,20 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = [
 # Deflate-only zip: avoids bzip2-sys, lzma-sys, zstd-sys which need C cross-toolchain.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[dev-dependencies]
+# Performance benchmarking
+criterion = "0.5"
+
 
 [[example]]
 name = "basic"
 path = "examples/basic.rs"
+required-features = ["espeak"]
+
+# ── OpenAI-compatible TTS server ────────────────────────────────────────────────
+#
+# Requires espeak feature for text→audio conversion
+[[bin]]
+name = "kittentts-server"
+path = "src/bin/server.rs"
 required-features = ["espeak"]
