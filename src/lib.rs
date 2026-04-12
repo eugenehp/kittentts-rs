@@ -73,6 +73,13 @@ pub mod phonemize;
 pub mod preprocess;
 pub mod tokenize;
 
+// Streaming support
+pub mod encoding;
+pub mod streaming;
+
+// Re-exports for convenience
+pub use encoding::{AudioEncoder, AudioFormat, EncoderFactory};
+
 // ─── Re-exports for convenience ─────────────────────────────────────────────
 
 /// The main TTS model handle — use [`download::load_from_hub`] to obtain one.
