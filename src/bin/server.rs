@@ -234,23 +234,17 @@ async fn speech_handler(
     );
 
     // Run inference on a blocking thread (CPU-bound ONNX work).
+    // Clone the Arc so the blocking task owns a reference to AppState.
+    let state_clone = Arc::clone(&state);
     let input = req.input.clone();
     let voice_clone = voice.clone();
 
-    // SAFETY: AppState lives in Arc, so tts outlives the spawned task.
-    // The oneshot channel ensures we wait for completion before returning.
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let tts_ptr = &state.tts as *const KittenTTS;
-    let tts_ref: &'static KittenTTS = unsafe { &*tts_ptr };
-    tokio::task::spawn_blocking(move || {
-        let result = tts_ref.generate(&input, &voice_clone, speed, true);
-        let _ = tx.send(result);
-    });
-
-    let audio = rx
-        .await
-        .map_err(|_| server_error("TTS task cancelled."))?
-        .map_err(|e| server_error(format!("TTS generation failed: {e}")))?;
+    let audio = tokio::task::spawn_blocking(move || {
+        state_clone.tts.generate(&input, &voice_clone, speed, true)
+    })
+    .await
+    .map_err(|e| server_error(format!("TTS task panicked: {e}")))?
+    .map_err(|e| server_error(format!("TTS generation failed: {e}")))?;
 
     // Encode
     let bytes = encoder
