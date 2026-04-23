@@ -69,9 +69,10 @@ struct AppState {
 
 #[derive(Deserialize)]
 struct SpeechRequest {
-    /// Model identifier (accepted for compatibility, not used for selection).
+    /// Model identifier (accepted for OpenAI compatibility, not used for selection).
+    #[serde(default)]
     #[allow(dead_code)]
-    model: String,
+    model: Option<String>,
 
     /// Text to synthesise. Maximum 4096 characters.
     input: String,
@@ -187,11 +188,11 @@ async fn speech_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SpeechRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    // Validate input
+    // Validate input (OpenAI spec: max 4096 characters, not bytes)
     if req.input.is_empty() {
         return Err(bad_request("Input text must not be empty."));
     }
-    if req.input.len() > 4096 {
+    if req.input.chars().count() > 4096 {
         return Err(bad_request("Input text must be at most 4096 characters."));
     }
 
@@ -224,11 +225,7 @@ async fn speech_handler(
 
     // Log request (truncate input for readability)
     let display_input: String = req.input.chars().take(80).collect();
-    let truncated = if req.input.chars().count() > 80 {
-        "..."
-    } else {
-        ""
-    };
+    let truncated = if display_input.len() < req.input.len() { "..." } else { "" };
     eprintln!(
         "POST /v1/audio/speech voice={voice} format={format_str} speed={speed} input=\"{display_input}{truncated}\""
     );

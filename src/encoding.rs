@@ -219,6 +219,14 @@ impl AudioEncoder for OpusEncoder {
 
         // Frame size: 20ms worth of samples
         let frame_samples = (sample_rate as usize) / 50; // 20ms
+
+        // Opus needs at least one frame; pad if necessary.
+        let samples = if samples.is_empty() {
+            &vec![0.0f32; frame_samples]
+        } else {
+            samples
+        };
+
         let mut ogg_buf = Vec::new();
 
         // Write OGG stream
