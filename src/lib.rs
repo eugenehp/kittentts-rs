@@ -67,6 +67,7 @@ pub mod download;
 // C FFI for iOS / Android — exposes kittentts_model_load / synthesize / free.
 pub mod ffi;
 
+pub mod encoding;
 pub mod model;
 pub mod npz;
 pub mod phonemize;
@@ -80,3 +81,5 @@ pub use model::KittenTtsOnnx as KittenTTS;
 
 /// Audio sample rate produced by the model.
 pub use model::SAMPLE_RATE;
+
+pub use encoding::{AudioEncoder, AudioFormat, EncoderFactory};
