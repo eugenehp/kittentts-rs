@@ -482,9 +482,9 @@ dependencies = [
 
 [[package]]
 name = "espeak-ng"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf53da2d1e3049cfff5ae289a05b456c753c15cbe0bff2b97251aef5a748da94"
+checksum = "797dcf553dc7581c714b28dc0f4caabb7bbb98ce3f5b70e3c9c2d2f2f7cce5b2"
 dependencies = [
  "bitflags",
  "espeak-ng-data-dict-ru",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "kittentts"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "audiopus",
