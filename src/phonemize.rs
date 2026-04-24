@@ -103,12 +103,35 @@ mod inner {
             .map_err(|e| anyhow!("espeak-ng init for '{}' failed: {}", lang, e))
     }
 
+    /// Detect if text contains CJK characters and return the appropriate language code.
+    fn detect_lang(text: &str) -> &'static str {
+        for ch in text.chars() {
+            match ch {
+                '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+                | '\u{3400}'..='\u{4DBF}'   // CJK Unified Ideographs Extension A
+                | '\u{F900}'..='\u{FAFF}'   // CJK Compatibility Ideographs
+                => return "cmn",
+                '\u{3040}'..='\u{309F}'     // Hiragana
+                | '\u{30A0}'..='\u{30FF}'   // Katakana
+                => return "ja",
+                '\u{AC00}'..='\u{D7AF}'     // Hangul Syllables
+                | '\u{1100}'..='\u{11FF}'   // Hangul Jamo
+                => return "ko",
+                _ => continue,
+            }
+        }
+        "en"
+    }
+
     pub(super) fn run_phonemize(text: &str) -> Result<String> {
         if text.is_empty() {
             return Ok(String::new());
         }
 
-        let engine = create_engine()?;
+        let lang = detect_lang(text);
+        let data_dir = get_data_dir()?;
+        let engine = espeak_ng::EspeakNg::with_data_dir(lang, data_dir)
+            .map_err(|e| anyhow!("espeak-ng init for '{}' failed: {}", lang, e))?;
         let ipa = engine
             .text_to_phonemes(text)
             .map_err(|e| anyhow!("espeak-ng phonemise failed: {}", e))?;
