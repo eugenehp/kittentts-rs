@@ -120,7 +120,7 @@ pub struct KittenTtsOnnx {
     session: Mutex<Session>,
     voices: HashMap<String, Voice>,
     speed_priors: HashMap<String, f32>,
-    voice_aliases: HashMap<String, String>,
+    pub voice_aliases: HashMap<String, String>,
     #[cfg(feature = "espeak")]
     preprocessor: TextPreprocessor,
     pub available_voices: Vec<String>,
